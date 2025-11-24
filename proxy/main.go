@@ -12,59 +12,70 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
 func main() {
-	target, err := url.Parse("http://localhost:4199")
 
-	if err != nil {
-		log.Fatal(err)
+	backends := []*Backend{
+		{Name: "backend1", TargetUrl: mustParse("http://localhost:5004"), Healthy: true},
+		{Name: "backend2", TargetUrl: mustParse("http://localhost:5001"), Healthy: true},
+		{Name: "backend3", TargetUrl: mustParse("http://localhost:5003"), Healthy: true},
 	}
-
 	// create a reverse proxy
-	proxy := httputil.NewSingleHostReverseProxy(target)
 
-	originalDirector := proxy.Director
-	proxy.Director = func(request *http.Request) {
-		ctx := request.Context()
-		originalDirector(request)
+	bkPool := NewBackendPool(backends, "round-robin", 100)
+	proxy := &httputil.ReverseProxy{
+		Director: func(request *http.Request) {
+			backend, ok := request.Context().Value("backend").(*Backend)
+			if !ok {
+				return
+			}
 
-		//add custom headers
-		host, _, _ := net.SplitHostPort(request.RemoteAddr)
-		if prior := request.Header.Get("X-Forwarded-For"); prior != "" {
-			request.Header.Set("X-Forwarded-For", prior+", "+host)
-		} else {
-			request.Header.Set("X-Forwarded-For", host)
-		}
-		request.Header.Set("X-Origin-Host", target.Host)
-		if request.TLS == nil {
-			request.Header.Set("X-Forwarded-Proto", "http")
-		} else {
-			request.Header.Set("X-Forwarded-Proto", "https")
-		}
+			ctx := request.Context()
+			target := backend.TargetUrl
+			request.URL.Scheme = target.Scheme
+			request.URL.Host = target.Host
+			request.URL.Path = singleJoiningSlash(target.Path, request.URL.Path)
 
-		rid := request.Header.Get("X-Request-ID")
-		if rid == "" {
-			rid = strconv.FormatInt(time.Now().UnixNano(), 10)
-			request.Header.Set("X-Request-ID", rid)
-		}
+			//add custom headers
+			host, _, _ := net.SplitHostPort(request.RemoteAddr)
+			if prior := request.Header.Get("X-Forwarded-For"); prior != "" {
+				request.Header.Set("X-Forwarded-For", prior+", "+host)
+			} else {
+				request.Header.Set("X-Forwarded-For", host)
+			}
+			request.Header.Set("X-Origin-Host", target.Host)
+			if request.TLS == nil {
+				request.Header.Set("X-Forwarded-Proto", "http")
+			} else {
+				request.Header.Set("X-Forwarded-Proto", "https")
+			}
+			request.Header.Set("X-Backend-Name", backend.Name)
 
-		//log request
-		reqLog := RequestLog{
-			ID:         request.Header.Get("X-Request-ID"),
-			Method:     request.Method,
-			URL:        request.URL.String(),
-			Headers:    request.Header,
-			RemoteAddr: request.RemoteAddr,
-			Timestamp:  time.Now().UTC(),
-		}
-		if startTime, ok := ctx.Value("request-timer").(time.Time); ok {
-			reqLog.ProcessingTime = time.Since(startTime)
-			reqLog.UpstreamTime = time.Since(ctx.Value("request-timer").(time.Time))
-		}
-		jsonLog, _ := json.Marshal(reqLog)
-		log.Printf("Request Received: %s", jsonLog)
+			rid := request.Header.Get("X-Request-ID")
+			if rid == "" {
+				rid = strconv.FormatInt(time.Now().UnixNano(), 10)
+				request.Header.Set("X-Request-ID", rid)
+			}
+			//	//log request
+			reqLog := RequestLog{
+				ID:         request.Header.Get("X-Request-ID"),
+				Method:     request.Method,
+				URL:        request.URL.String(),
+				Headers:    request.Header,
+				RemoteAddr: request.RemoteAddr,
+				Timestamp:  time.Now().UTC(),
+			}
+			if startTime, ok := ctx.Value("request-timer").(time.Time); ok {
+				reqLog.ProcessingTime = time.Since(startTime)
+				reqLog.UpstreamTime = time.Since(ctx.Value("request-timer").(time.Time))
+			}
+			jsonLog, _ := json.Marshal(reqLog)
+			log.Printf("Request Received: %s", jsonLog)
+		},
 	}
 
 	proxy.Transport = &http.Transport{
@@ -79,7 +90,19 @@ func main() {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("proxy error (rid=%s): %v", r.Header.Get("X-Request-ID"), err)
+		backend, ok := r.Context().Value("backend").(*Backend)
+		if ok {
+			bkPool.UpdateBackendStatus(backend, false)
+			log.Printf("proxy error (rid=%s, backend=%s): %v",
+				r.Header.Get("X-Request-ID"),
+				backend.Name,
+				err)
+		} else {
+			log.Printf("proxy error (rid=%s): %v",
+				r.Header.Get("X-Request-ID"),
+				err)
+		}
+
 		if errors.Is(err, context.Canceled) {
 			w.WriteHeader(499)
 			return
@@ -93,6 +116,7 @@ func main() {
 
 	proxy.ModifyResponse = func(response *http.Response) error {
 		var bodyBytes []byte
+		var err error
 		if response.Request.URL.Path == "/health" {
 			bodyBytes, err = io.ReadAll(response.Body)
 			if err != nil {
@@ -146,7 +170,22 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		request = request.WithContext(context.WithValue(request.Context(), "request-timer", time.Now().UTC()))
+		backend := bkPool.GetNextPeer()
+		if backend == nil {
+			http.Error(writer, "No healthy backends", http.StatusServiceUnavailable)
+			return
+		}
+
+		// 2. Track active requests
+		atomic.AddInt32(&backend.ActiveRequest, 1)
+		defer atomic.AddInt32(&backend.ActiveRequest, -1)
+
+		// 3. Store backend in context for Director to use
+		ctx := context.WithValue(request.Context(), "backend", backend)
+		ctx = context.WithValue(ctx, "request-timer", time.Now().UTC())
+		request = request.WithContext(ctx)
+
+		// 4. Proxy the request
 		proxy.ServeHTTP(writer, request)
 	})
 
@@ -174,4 +213,25 @@ type ResponseLog struct {
 	Body       string        `json:"body"`
 	Timestamp  time.Time     `json:"timestamp"`
 	Duration   time.Duration `json:"duration"`
+}
+
+// Helper function (from httputil internals)
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
+
+func mustParse(rawurl string) *url.URL {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }
