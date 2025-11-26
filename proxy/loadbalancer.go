@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -67,7 +68,37 @@ func (bp *BackendPool) GetNextPeer() *Backend {
 }
 
 func (bp *BackendPool) HealthCheck() {
+	ticker := time.NewTicker(bp.HealthCheckInterval)
+	defer ticker.Stop()
 
+	for range ticker.C {
+		for _, backend := range bp.Backends {
+			go bp.checkBackend(backend)
+		}
+	}
+}
+
+func (bp *BackendPool) checkBackend(backend *Backend) {
+	// Build health check URL
+	healthURL := *backend.TargetUrl
+	healthURL.Path = "/health"
+
+	// Make request with timeout
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(healthURL.String())
+
+	if err != nil {
+		bp.UpdateBackendStatus(backend, false)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Consider 200-299 as healthy
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		bp.UpdateBackendStatus(backend, true)
+	} else {
+		bp.UpdateBackendStatus(backend, false)
+	}
 }
 
 func (bp *BackendPool) RemoveBackend(backend *Backend) {

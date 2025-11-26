@@ -23,10 +23,11 @@ func main() {
 		{Name: "backend1", TargetUrl: mustParse("http://localhost:5004"), Healthy: true},
 		{Name: "backend2", TargetUrl: mustParse("http://localhost:5001"), Healthy: true},
 		{Name: "backend3", TargetUrl: mustParse("http://localhost:5003"), Healthy: true},
+		{Name: "backend4", TargetUrl: mustParse("http://localhost:5002"), Healthy: true},
 	}
 	// create a reverse proxy
 
-	bkPool := NewBackendPool(backends, "round-robin", 100)
+	bkPool := NewBackendPool(backends, "round-robin", 3*time.Second)
 	proxy := &httputil.ReverseProxy{
 		Director: func(request *http.Request) {
 			backend, ok := request.Context().Value("backend").(*Backend)

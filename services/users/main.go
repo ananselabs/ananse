@@ -15,6 +15,10 @@ func main() {
 		})
 	})
 
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("OK"))
+	})
+
 	log.Println("User service listening on :5002")
 	log.Fatal(http.ListenAndServe(":5002", nil))
 }

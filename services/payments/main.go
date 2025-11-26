@@ -15,6 +15,10 @@ func main() {
 		})
 	})
 
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Ok"))
+	})
+
 	log.Println("Payment service listening on :5003")
 	log.Fatal(http.ListenAndServe(":5003", nil))
 }

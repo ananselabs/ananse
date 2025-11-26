@@ -15,6 +15,10 @@ func main() {
 		})
 	})
 
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Ok"))
+	})
+
 	log.Println("Auth service listening on :5001")
 	log.Fatal(http.ListenAndServe(":5001", nil))
 }
