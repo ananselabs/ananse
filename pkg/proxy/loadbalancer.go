@@ -1,6 +1,7 @@
-package main
+package proxy
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -52,6 +53,17 @@ func (bp *BackendPool) UpdateBackendStatus(backend *Backend, healthy bool) {
 }
 
 func (bp *BackendPool) GetNextPeer() *Backend {
+	switch bp.Strategy {
+	case "least-connections":
+		return bp.getNextLeastConnection()
+	case "round-robin":
+		return bp.getNextRoundRobin()
+	default:
+		return bp.getNextRoundRobin()
+	}
+}
+
+func (bp *BackendPool) getNextRoundRobin() *Backend {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
@@ -99,6 +111,29 @@ func (bp *BackendPool) checkBackend(backend *Backend) {
 	} else {
 		bp.UpdateBackendStatus(backend, false)
 	}
+}
+
+func (bp *BackendPool) getNextLeastConnection() *Backend {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+
+	var leastConnected *Backend
+	for i := 0; i < len(bp.Backends); i++ {
+		if !bp.Backends[i].Healthy {
+			continue
+		}
+
+		if leastConnected == nil {
+			leastConnected = bp.Backends[i]
+			continue
+		}
+
+		if bp.Backends[i].ActiveRequest < leastConnected.ActiveRequest {
+			leastConnected = bp.Backends[i]
+		}
+	}
+	fmt.Printf("%s has the least connection of %d active connections\n ", leastConnected.Name, leastConnected.ActiveRequest)
+	return leastConnected
 }
 
 func (bp *BackendPool) RemoveBackend(backend *Backend) {

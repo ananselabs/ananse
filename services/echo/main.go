@@ -40,6 +40,7 @@ func echoHandler(w http.ResponseWriter, r *http.Request) {
 		var err error
 		// Convert to integer
 		sleepMs, err = strconv.Atoi(sleep)
+		fmt.Println("sleeping")
 		if err != nil {
 			http.Error(w, "Invalid sleep parameter", http.StatusBadRequest)
 			return

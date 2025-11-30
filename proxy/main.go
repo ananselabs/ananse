@@ -1,6 +1,7 @@
 package main
 
 import (
+	lb "ananse/pkg/proxy"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,7 +20,7 @@ import (
 
 func main() {
 
-	backends := []*Backend{
+	backends := []*lb.Backend{
 		{Name: "backend1", TargetUrl: mustParse("http://localhost:5004"), Healthy: true},
 		{Name: "backend2", TargetUrl: mustParse("http://localhost:5001"), Healthy: true},
 		{Name: "backend3", TargetUrl: mustParse("http://localhost:5003"), Healthy: true},
@@ -27,10 +28,10 @@ func main() {
 	}
 	// create a reverse proxy
 
-	bkPool := NewBackendPool(backends, "round-robin", 3*time.Second)
+	bkPool := lb.NewBackendPool(backends, "least-connections", 3*time.Second)
 	proxy := &httputil.ReverseProxy{
 		Director: func(request *http.Request) {
-			backend, ok := request.Context().Value("backend").(*Backend)
+			backend, ok := request.Context().Value("backend").(*lb.Backend)
 			if !ok {
 				return
 			}
@@ -91,7 +92,7 @@ func main() {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		backend, ok := r.Context().Value("backend").(*Backend)
+		backend, ok := r.Context().Value("backend").(*lb.Backend)
 		if ok {
 			bkPool.UpdateBackendStatus(backend, false)
 			log.Printf("proxy error (rid=%s, backend=%s): %v",
