@@ -9,13 +9,24 @@ import (
 	"time"
 )
 
+type State int
+
+const (
+	Closed State = iota
+	HalfOpen
+	Open
+)
+
 type Backend struct {
-	Name          string
-	TargetUrl     *url.URL
-	Healthy       bool
-	ActiveRequest int32
-	MaxRequest    int
-	FailureCount  int
+	Name           string
+	TargetUrl      *url.URL
+	Healthy        bool
+	ActiveRequest  int32
+	MaxRequest     int
+	FailureCount   int
+	resetTimeOut   time.Duration
+	backofDuration time.Duration
+	state          State
 }
 
 type BackendPool struct {
@@ -47,7 +58,26 @@ func (bp *BackendPool) UpdateBackendStatus(backend *Backend, healthy bool) {
 		log.Printf("Backend %s marked unhealthy (failures: %d)", backend.Name, backend.FailureCount)
 	} else {
 		backend.FailureCount = 0
+		backend.backofDuration = 0
+		backend.state = Closed
+		backend.resetTimeOut = 0
 		log.Printf("Backend %s marked healthy", backend.Name)
+	}
+
+	// if failure count is greater than 5 open the circuit set the next check time to 3 sec * the time remaining
+	if backend.FailureCount == 5 {
+		if backend.state == HalfOpen {
+			backend.resetTimeOut = backend.backofDuration + 3*time.Second + bp.HealthCheckInterval*2
+			backend.state = Open
+		} else {
+			backend.state = Open
+			backend.resetTimeOut = backend.resetTimeOut + 3*time.Second + bp.HealthCheckInterval
+		}
+		if backend.backofDuration != 0 {
+			backend.backofDuration = backend.backofDuration * 2
+		} else {
+			backend.backofDuration = 3 * time.Second
+		}
 	}
 
 }
@@ -85,7 +115,29 @@ func (bp *BackendPool) HealthCheck() {
 
 	for range ticker.C {
 		for _, backend := range bp.Backends {
-			go bp.checkBackend(backend)
+			bp.mu.Lock()
+
+			shouldCheck := true
+
+			if backend.state == Open {
+				if backend.resetTimeOut >= bp.HealthCheckInterval {
+					backend.resetTimeOut -= bp.HealthCheckInterval
+					fmt.Printf("%s next check time is %s\n", backend.Name, backend.resetTimeOut)
+					shouldCheck = false
+				} else {
+					backend.state = HalfOpen
+				}
+			}
+
+			if backend.state == HalfOpen {
+				backend.FailureCount -= 1
+			}
+
+			bp.mu.Unlock()
+
+			if shouldCheck {
+				go bp.checkBackend(backend)
+			}
 		}
 	}
 }
