@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -82,14 +83,18 @@ func (bp *BackendPool) UpdateBackendStatus(backend *Backend, healthy bool) {
 
 }
 
-func (bp *BackendPool) GetNextPeer() *Backend {
+func (bp *BackendPool) GetNextPeer() (*Backend, error) {
 	switch bp.Strategy {
 	case "least-connections":
-		return bp.getNextLeastConnection()
+		backend, err := bp.getNextLeastConnection()
+		if err != nil {
+			return nil, err
+		}
+		return backend, nil
 	case "round-robin":
-		return bp.getNextRoundRobin()
+		return bp.getNextRoundRobin(), nil
 	default:
-		return bp.getNextRoundRobin()
+		return bp.getNextRoundRobin(), nil
 	}
 }
 
@@ -165,7 +170,7 @@ func (bp *BackendPool) checkBackend(backend *Backend) {
 	}
 }
 
-func (bp *BackendPool) getNextLeastConnection() *Backend {
+func (bp *BackendPool) getNextLeastConnection() (*Backend, error) {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
@@ -184,8 +189,11 @@ func (bp *BackendPool) getNextLeastConnection() *Backend {
 			leastConnected = bp.Backends[i]
 		}
 	}
+	if leastConnected == nil {
+		return nil, errors.New("no healthy backends")
+	}
 	fmt.Printf("%s has the least connection of %d active connections\n ", leastConnected.Name, leastConnected.ActiveRequest)
-	return leastConnected
+	return leastConnected, nil
 }
 
 func (bp *BackendPool) RemoveBackend(backend *Backend) {

@@ -27,8 +27,7 @@ func main() {
 		{Name: "backend4", TargetUrl: mustParse("http://localhost:5002"), Healthy: true},
 	}
 	// create a reverse proxy
-
-	bkPool := lb.NewBackendPool(backends, "least-connections", 3*time.Second)
+	bkPool := lb.NewBackendPool(backends, "round-robin", 60*time.Second)
 	proxy := &httputil.ReverseProxy{
 		Director: func(request *http.Request) {
 			backend, ok := request.Context().Value("backend").(*lb.Backend)
@@ -172,23 +171,65 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		backend := bkPool.GetNextPeer()
-		if backend == nil {
-			http.Error(writer, "No healthy backends", http.StatusServiceUnavailable)
+		maxRetries := 3
+
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			backend, err := bkPool.GetNextPeer()
+			if err != nil {
+				break // No more backends
+			}
+
+			// Track active requests
+			atomic.AddInt32(&backend.ActiveRequest, 1)
+
+			// Setup context
+			ctx := context.WithValue(request.Context(), "backend", backend)
+			ctx = context.WithValue(ctx, "request-timer", time.Now().UTC())
+			request = request.WithContext(ctx)
+
+			// Prepare request (Director's job)
+			proxy.Director(request)
+
+			// Try backend
+			resp, err := proxy.Transport.RoundTrip(request)
+
+			atomic.AddInt32(&backend.ActiveRequest, -1)
+
+			if err != nil {
+				bkPool.UpdateBackendStatus(backend, false)
+				log.Printf("Backend %s failed: %v, retrying...", backend.Name, err)
+				continue
+			}
+
+			// Success! Now modify response BEFORE writing to client
+			defer resp.Body.Close()
+
+			if proxy.ModifyResponse != nil {
+				err = proxy.ModifyResponse(resp)
+				if err != nil {
+					log.Printf("ModifyResponse error: %v", err)
+					// Decide: treat as failure and retry, or send anyway?
+				}
+			}
+
+			// Copy headers
+			for key, values := range resp.Header {
+				for _, value := range values {
+					writer.Header().Add(key, value)
+				}
+			}
+
+			// Write status and body
+			writer.WriteHeader(resp.StatusCode)
+			io.Copy(writer, resp.Body)
+
+			log.Printf("Request succeeded via %s", backend.Name)
 			return
 		}
 
-		// 2. Track active requests
-		atomic.AddInt32(&backend.ActiveRequest, 1)
-		defer atomic.AddInt32(&backend.ActiveRequest, -1)
-
-		// 3. Store backend in context for Director to use
-		ctx := context.WithValue(request.Context(), "backend", backend)
-		ctx = context.WithValue(ctx, "request-timer", time.Now().UTC())
-		request = request.WithContext(ctx)
-
-		// 4. Proxy the request
-		proxy.ServeHTTP(writer, request)
+		// All retries failed
+		log.Printf("All retries exhausted after %d attempts", maxRetries)
+		http.Error(writer, "All backends failed", http.StatusBadGateway)
 	})
 
 	log.Println("Proxy server started on :8089")
