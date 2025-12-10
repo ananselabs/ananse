@@ -1,7 +1,7 @@
 package main
 
 import (
-	lb "ananse/pkg/proxy"
+	px "ananse/pkg/proxy"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -20,17 +20,20 @@ import (
 
 func main() {
 
-	backends := []*lb.Backend{
+	backends := []*px.Backend{
 		{Name: "backend1", TargetUrl: mustParse("http://localhost:5004"), Healthy: true},
 		{Name: "backend2", TargetUrl: mustParse("http://localhost:5001"), Healthy: true},
 		{Name: "backend3", TargetUrl: mustParse("http://localhost:5003"), Healthy: true},
 		{Name: "backend4", TargetUrl: mustParse("http://localhost:5002"), Healthy: true},
 	}
 	// create a reverse proxy
-	bkPool := lb.NewBackendPool(backends, "round-robin", 60*time.Second)
+	bkPool := px.NewBackendPool(backends)
+	loadbalancer := px.NewLoadBalancer("round-robin", bkPool)
+	health := px.NewHealthCheck(bkPool, 2*time.Second)
+	go health.Check()
 	proxy := &httputil.ReverseProxy{
 		Director: func(request *http.Request) {
-			backend, ok := request.Context().Value("backend").(*lb.Backend)
+			backend, ok := request.Context().Value("backend").(*px.Backend)
 			if !ok {
 				return
 			}
@@ -91,9 +94,9 @@ func main() {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		backend, ok := r.Context().Value("backend").(*lb.Backend)
+		backend, ok := r.Context().Value("backend").(*px.Backend)
 		if ok {
-			bkPool.UpdateBackendStatus(backend, false)
+			bkPool.UpdateBackendStatus(backend.Name, false, health.GetHealthCHeckInterval())
 			log.Printf("proxy error (rid=%s, backend=%s): %v",
 				r.Header.Get("X-Request-ID"),
 				backend.Name,
@@ -174,7 +177,7 @@ func main() {
 		maxRetries := 3
 
 		for attempt := 0; attempt < maxRetries; attempt++ {
-			backend, err := bkPool.GetNextPeer()
+			backend, err := loadbalancer.GetNextPeer()
 			if err != nil {
 				break // No more backends
 			}
@@ -196,7 +199,7 @@ func main() {
 			atomic.AddInt32(&backend.ActiveRequest, -1)
 
 			if err != nil {
-				bkPool.UpdateBackendStatus(backend, false)
+				bkPool.UpdateBackendStatus(backend.Name, false, health.GetHealthCHeckInterval())
 				log.Printf("Backend %s failed: %v, retrying...", backend.Name, err)
 				continue
 			}
