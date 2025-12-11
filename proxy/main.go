@@ -28,8 +28,8 @@ func main() {
 	}
 	// create a reverse proxy
 	bkPool := px.NewBackendPool(backends)
-	loadbalancer := px.NewLoadBalancer("round-robin", bkPool)
-	health := px.NewHealthCheck(bkPool, 2*time.Second)
+	loadbalancer := px.NewLoadBalancer("least-connections", bkPool)
+	health := px.NewHealthCheck(bkPool, 30*time.Second)
 	go health.Check()
 	proxy := &httputil.ReverseProxy{
 		Director: func(request *http.Request) {

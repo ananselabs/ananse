@@ -2,19 +2,10 @@
 package proxy
 
 import (
-	"errors"
 	"log"
 	"net/url"
 	"sync"
 	"time"
-)
-
-type State int
-
-const (
-	Closed State = iota
-	HalfOpen
-	Open
 )
 
 type Backend struct {
@@ -31,7 +22,6 @@ type Backend struct {
 
 type BackendPool struct {
 	Backends []*Backend
-	current  int
 	mu       sync.RWMutex
 }
 
@@ -51,33 +41,31 @@ func (bp *BackendPool) GetBackendByName(name string) *Backend {
 	return nil
 }
 
-func (bp *BackendPool) Current() int {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	return bp.current
-}
-func (bp *BackendPool) UpdateCurrent(index int) {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	bp.current = index
-}
-
-func (bp *BackendPool) IsHealthy(index int) bool {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	return bp.Backends[index].Healthy
-}
-
-func (bp *BackendPool) GetBackend(index int) *Backend {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	return bp.Backends[index]
-}
-
-func (bp *BackendPool) PoolSize() int {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
+// GetBackendCount returns number of backends
+func (bp *BackendPool) GetBackendCount() int {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
 	return len(bp.Backends)
+}
+
+// GetBackendAtIndex returns backend at given index (thread-safe)
+func (bp *BackendPool) GetBackendAtIndex(idx int) *Backend {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
+	if idx < 0 || idx >= len(bp.Backends) {
+		return nil
+	}
+	return bp.Backends[idx]
+}
+
+// IsBackendHealthy checks if backend at index is healthy
+func (bp *BackendPool) IsBackendHealthy(idx int) bool {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
+	if idx < 0 || idx >= len(bp.Backends) {
+		return false
+	}
+	return bp.Backends[idx].Healthy
 }
 
 func (bp *BackendPool) GetPool() []*Backend {
@@ -128,48 +116,6 @@ func (bp *BackendPool) GetCircuitState(name string, checkinterval time.Duration)
 	}
 
 	return true, backend.state
-}
-
-func (bp *BackendPool) GetNextRoundRobin() *Backend {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-
-	start := bp.current
-
-	for i := 0; i < len(bp.Backends); i++ {
-		idx := (start + i) % len(bp.Backends)
-		if bp.Backends[idx].Healthy {
-			bp.current = (idx + 1) % len(bp.Backends)
-			return bp.Backends[idx]
-		}
-	}
-	return nil
-}
-
-func (bp *BackendPool) GetNextLeastConnection() (*Backend, error) {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-
-	var leastConnected *Backend
-	for i := 0; i < len(bp.Backends); i++ {
-		if !bp.Backends[i].Healthy {
-			continue
-		}
-
-		if leastConnected == nil {
-			leastConnected = bp.Backends[i]
-			continue
-		}
-
-		if bp.Backends[i].ActiveRequest < leastConnected.ActiveRequest {
-			leastConnected = bp.Backends[i]
-		}
-	}
-
-	if leastConnected == nil {
-		return nil, errors.New("no healthy backends")
-	}
-	return leastConnected, nil
 }
 
 func (bp *BackendPool) UpdateBackendStatus(name string, healthy bool, checkInterval time.Duration) {
