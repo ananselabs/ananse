@@ -7,19 +7,18 @@ import (
 )
 
 type LoadBalancer struct {
-	Strategy []string
-	Current  string
+	Strategy string
 	mu       sync.RWMutex
 	pool     *BackendPool
 	current  int
 }
 
-func NewLoadBalancer(current string, pool *BackendPool) *LoadBalancer {
-	return &LoadBalancer{Current: current, pool: pool}
+func NewLoadBalancer(strategy string, pool *BackendPool) *LoadBalancer {
+	return &LoadBalancer{Strategy: strategy, pool: pool}
 }
 
 func (lb *LoadBalancer) GetNextPeer() (*Backend, error) {
-	switch lb.Current {
+	switch lb.Strategy {
 	case "least-connections":
 		backend, err := lb.getNextLeastConnection()
 		if err != nil {
@@ -27,9 +26,17 @@ func (lb *LoadBalancer) GetNextPeer() (*Backend, error) {
 		}
 		return backend, nil
 	case "round-robin":
-		return lb.getNextRoundRobin(), nil
+		backend := lb.getNextRoundRobin()
+		if backend == nil {
+			return nil, errors.New("no healthy backends")
+		}
+		return backend, nil
 	default:
-		return lb.getNextRoundRobin(), nil
+		backend := lb.getNextRoundRobin()
+		if backend == nil {
+			return nil, errors.New("no healthy backends")
+		}
+		return backend, nil
 	}
 }
 
@@ -42,9 +49,10 @@ func (lb *LoadBalancer) getNextRoundRobin() *Backend {
 
 	for i := 0; i < backendCount; i++ {
 		idx := (start + i) % backendCount
-		if lb.pool.IsBackendHealthy(idx) {
+		backend := lb.pool.GetBackendAtIndex(idx)
+		if backend != nil && backend.IsHealthy() {
 			lb.current = (idx + 1) % backendCount
-			return lb.pool.GetBackendAtIndex(idx)
+			return backend
 		}
 	}
 	return nil
@@ -56,7 +64,7 @@ func (lb *LoadBalancer) getNextLeastConnection() (*Backend, error) {
 
 	var leastConnected *Backend
 	for _, backend := range backends {
-		if !backend.Healthy {
+		if !backend.IsHealthy() {
 			continue
 		}
 
@@ -65,7 +73,7 @@ func (lb *LoadBalancer) getNextLeastConnection() (*Backend, error) {
 			continue
 		}
 
-		if backend.ActiveRequest < leastConnected.ActiveRequest {
+		if backend.GetActiveRequests() < leastConnected.GetActiveRequests() {
 			leastConnected = backend
 		}
 	}
