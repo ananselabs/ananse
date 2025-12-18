@@ -1,0 +1,11 @@
+groups:
+  - name: ananse_alerts
+    rules:
+      - alert: BackendUnhealthy
+        expr: ananse_backend_health_status == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend {{ $labels.backend }} is unhealthy"
+          description: "Backend {{ $labels.backend }} has been unhealthy for 5 minutes"

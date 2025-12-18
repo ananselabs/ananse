@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"time"
 )
 
@@ -30,6 +31,9 @@ func NewProxyHandler(lb *LoadBalancer, pool *BackendPool, health *Health, proxy 
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	RecordRequestStart()
+	defer RecordRequestEnd()
+	startTime := time.Now()
 	maxRetries := 3
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -41,6 +45,10 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if backend == nil {
 			log.Printf("No backend available")
 			break
+		}
+
+		if attempt > 0 {
+			RecordRetryAttempt(backend.Name)
 		}
 
 		// Track active requests
@@ -65,6 +73,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp, err := h.proxy.Transport.RoundTrip(outReq)
 
 		if err != nil {
+			RecordBackendFailure(backend.Name)
 			backend.DecrementActiveRequests()
 			h.pool.UpdateBackendStatus(backend.Name, false, h.health.GetHealthCHeckInterval())
 			log.Printf("Backend %s failed: %v, retrying...", backend.Name, err)
@@ -95,6 +104,8 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, resp.Body)
 
 		backend.DecrementActiveRequests()
+		duration := time.Since(startTime).Seconds()
+		RecordRequest(backend.Name, r.Method, strconv.Itoa(resp.StatusCode), duration)
 		log.Printf("Request succeeded via %s", backend.Name)
 		return
 	}

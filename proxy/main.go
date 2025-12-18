@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -21,6 +23,7 @@ func main() {
 	bkPool := px.NewBackendPool(backends)
 	loadbalancer := px.NewLoadBalancer("round-robin", bkPool)
 	health := px.NewHealthCheck(bkPool, 10*time.Second)
+
 	go health.Check()
 	proxy := &httputil.ReverseProxy{
 		Director:       px.Director(),
@@ -31,6 +34,20 @@ func main() {
 
 	handler := px.NewProxyHandler(loadbalancer, bkPool, health, proxy)
 
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/", handler)
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			for _, backend := range backends {
+				px.UpdateBackendConnections(backend.Name, backend.GetActiveRequests())
+			}
+		}
+	}()
+
 	log.Println("Proxy server started on :8089")
-	log.Fatal(http.ListenAndServe(":8089", handler))
+	log.Fatal(http.ListenAndServe(":8089", mux))
 }

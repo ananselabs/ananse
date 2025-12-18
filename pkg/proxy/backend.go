@@ -45,8 +45,10 @@ func (b *Backend) UpdateStatus(healthy bool, checkInterval time.Duration) {
 	defer b.mu.Unlock()
 
 	b.Healthy = healthy
+	UpdateBackendHealth(b.Name, healthy)
 	if !healthy {
 		b.FailureCount++
+		RecordBackendFailure(b.Name)
 		log.Printf("Backend %s marked unhealthy (failures: %d)", b.Name, b.FailureCount)
 	} else {
 		b.FailureCount = 0
@@ -70,6 +72,7 @@ func (b *Backend) UpdateStatus(healthy bool, checkInterval time.Duration) {
 		} else {
 			b.backofDuration = 3 * time.Second
 		}
+		UpdateCircuitBreakerState(b.Name, b.state)
 	}
 }
 
