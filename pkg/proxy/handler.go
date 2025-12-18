@@ -39,6 +39,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		backend, err := h.lb.GetNextPeer()
 		if err != nil {
+			RecordRetryAttempt(backend.Name)
 			log.Printf("Error getting backend: %v", err)
 			break
 		}
@@ -46,11 +47,6 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("No backend available")
 			break
 		}
-
-		if attempt > 0 {
-			RecordRetryAttempt(backend.Name)
-		}
-
 		// Track active requests
 		backend.IncrementActiveRequests()
 
