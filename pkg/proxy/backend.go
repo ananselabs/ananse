@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"fmt"
 	"log"
 	"net/url"
 	"sync"
@@ -20,6 +21,7 @@ type Backend struct {
 	backofDuration time.Duration
 	state          State
 	mu             sync.RWMutex
+	closed         bool
 }
 
 func (b *Backend) IsHealthy() bool {
@@ -109,6 +111,67 @@ func NewBackendPool(backends []*Backend) *BackendPool {
 		Backends: backends,
 	}
 	return bp
+}
+
+func (bp *BackendPool) UpdateBackend(newBackends []*Backend) {
+	bp.mu.Lock()
+	oldBackends := bp.Backends
+	bp.Backends = newBackends
+	bp.mu.Unlock()
+
+	// Drain removed backends asynchronously
+	go bp.drainRemovedBackends(oldBackends, newBackends)
+}
+
+func (bp *BackendPool) drainRemovedBackends(old, new []*Backend) {
+	removed := bp.findRemovedBackends(old, new)
+
+	for _, backend := range removed {
+		// Wait for active requests to reach 0
+		timeout := time.After(30 * time.Second)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-timeout:
+				fmt.Printf("Backend %s still has %d active requests after 30s, force closing",
+					backend.Name, backend.GetActiveRequests())
+				backend.Close()
+				return
+
+			case <-ticker.C:
+				if backend.GetActiveRequests() == 0 {
+					fmt.Printf("Backend %s drained, closing connections", backend.Name)
+					backend.Close()
+					return
+				}
+			}
+		}
+	}
+}
+
+func (bp *BackendPool) findRemovedBackends(old, new []*Backend) []*Backend {
+	newMap := make(map[string]bool)
+	for _, b := range new {
+		newMap[b.Name] = true
+	}
+
+	var removed []*Backend
+	for _, b := range old {
+		if !newMap[b.Name] {
+			removed = append(removed, b)
+		}
+	}
+	return removed
+}
+
+func (b *Backend) Close() {
+	// Close any connection pools
+	// Mark as closed to prevent new connections
+	b.mu.Lock()
+	b.closed = true
+	b.mu.Unlock()
 }
 
 func (bp *BackendPool) GetBackendByName(name string) *Backend {

@@ -86,7 +86,7 @@ func ErrorHandler(bkPool *BackendPool, health *Health) func(http.ResponseWriter,
 	return func(w http.ResponseWriter, r *http.Request, err error) {
 		backend, ok := r.Context().Value("backend").(*Backend)
 		if ok {
-			bkPool.UpdateBackendStatus(backend.Name, false, health.GetHealthCHeckInterval())
+			bkPool.UpdateBackendStatus(backend.Name, false, health.GetHealthCheckInterval())
 			log.Printf("proxy error (rid=%s, backend=%s): %v",
 				r.Header.Get("X-Request-ID"),
 				backend.Name,

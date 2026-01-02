@@ -2,27 +2,28 @@
 package main
 
 import (
+	config "ananse/config"
 	px "ananse/pkg/proxy"
-	"log"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 )
 
 func main() {
-
-	backends := []*px.Backend{
-		{Name: "backend1", TargetUrl: px.MustParse("http://localhost:5004"), Healthy: true},
-		{Name: "backend2", TargetUrl: px.MustParse("http://localhost:5001"), Healthy: true},
-		{Name: "backend3", TargetUrl: px.MustParse("http://localhost:5003"), Healthy: true},
-		{Name: "backend4", TargetUrl: px.MustParse("http://localhost:5002"), Healthy: true},
-	}
+	config.InitLogger()
+	defer config.Logger.Sync()
+	watcher := config.InitWatcher()
+	defer watcher.Close()
+	notifier := config.LoadConfig()
+	backends := config.CreateBackends(notifier)
 	// create a reverse proxy
 	bkPool := px.NewBackendPool(backends)
 	loadbalancer := px.NewLoadBalancer("round-robin", bkPool)
-	health := px.NewHealthCheck(bkPool, 10*time.Second)
+	health := px.NewHealthCheck(bkPool, 3*time.Second)
 
 	go health.Check()
 	proxy := &httputil.ReverseProxy{
@@ -42,12 +43,18 @@ func main() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			for _, backend := range backends {
+			for _, backend := range bkPool.GetAllBackends() {
 				px.UpdateBackendConnections(backend.Name, backend.GetActiveRequests())
 			}
 		}
 	}()
 
-	log.Println("Proxy server started on :8089")
-	log.Fatal(http.ListenAndServe(":8089", mux))
+	config.ConfigNotifier(bkPool, health, watcher)
+
+	config.Logger.Info("Proxy server is started",
+		zap.Int("port", notifier.Server.Port),
+	)
+	config.Logger.Fatal("Server failed",
+		zap.Error(http.ListenAndServe(fmt.Sprintf(":%d", notifier.Server.Port), mux)),
+	)
 }

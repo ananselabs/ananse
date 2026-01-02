@@ -71,7 +71,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			RecordBackendFailure(backend.Name)
 			backend.DecrementActiveRequests()
-			h.pool.UpdateBackendStatus(backend.Name, false, h.health.GetHealthCHeckInterval())
+			h.pool.UpdateBackendStatus(backend.Name, false, h.health.GetHealthCheckInterval())
 			log.Printf("Backend %s failed: %v, retrying...", backend.Name, err)
 			continue
 		}
