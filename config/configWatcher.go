@@ -55,7 +55,7 @@ func InitLogger() {
 	}
 }
 
-func LoadConfig() Config {
+func LoadConfig() (Config, error) {
 	if Logger == nil {
 		InitLogger()
 	}
@@ -68,7 +68,7 @@ func LoadConfig() Config {
 	viper.SetConfigName("config")
 	viper.AddConfigPath("./config/")
 	if err := viper.ReadInConfig(); err != nil {
-		Logger.Fatal("error reading config file: %v", zap.Error(err))
+		return Config{}, fmt.Errorf("error reading config file: %w", err)
 	}
 	viper.SetEnvPrefix("ANANSE")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -77,14 +77,14 @@ func LoadConfig() Config {
 	var config Config
 	err := viper.Unmarshal(&config)
 	if err != nil {
-		Logger.Fatal("Failed to parse config file: %v\nCheck services.yaml syntax", zap.Error(err))
+		return Config{}, fmt.Errorf("failed to parse config file: %w", err)
 	}
 	validate := validator.New(validator.WithRequiredStructEnabled())
 	err = validate.Struct(&config)
 	if err := validate.Struct(&config); err != nil {
-		Logger.Fatal("Config validation failed", zap.Error(err))
+		return Config{}, fmt.Errorf("config validation failed: %w", err)
 	}
-	return config
+	return config, nil
 }
 
 func CreateBackends(config Config) []*px.Backend {
@@ -139,7 +139,11 @@ func ConfigNotifier(bkPool *px.BackendPool, health *px.Health, watcher *fsnotify
 					reloadTimer = time.AfterFunc(500*time.Millisecond, func() {
 						Logger.Info("Config file changed, reloading...")
 
-						config := LoadConfig()
+						config, err := LoadConfig()
+						if err != nil {
+							Logger.Error("Reload failed", zap.Error(err))
+							return
+						}
 						backends := CreateBackends(config)
 
 						if len(backends) == 0 {

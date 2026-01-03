@@ -2,12 +2,12 @@ package main
 
 import (
 	"bufio"
+	"context" // Import context
 	"flag"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 )
@@ -23,7 +23,11 @@ func main() {
 	flag.Parse()
 	fmt.Printf("Starting Stress Tool - Mode: %s, Workers: %d, Duration: %s\n", *mode, *workers, *duration)
 
-	stop := time.After(*duration)
+	// FIX 1: Use Context for timeout instead of time.After
+	// This ensures the cancellation signal is broadcast to ALL workers
+	ctx, cancel := context.WithTimeout(context.Background(), *duration)
+	defer cancel()
+
 	var wg sync.WaitGroup
 
 	// Stats
@@ -43,7 +47,9 @@ func main() {
 
 			for {
 				select {
-				case <-stop:
+				// FIX 2: Listen to ctx.Done()
+				// When context expires, this channel is CLOSED, unblocking everyone immediately
+				case <-ctx.Done():
 					return
 				default:
 					// Action based on mode
@@ -71,7 +77,6 @@ func main() {
 						successCount++
 					} else {
 						failCount++
-						// fmt.Printf("Worker %d error: %v\n", id, err)
 					}
 					mu.Unlock()
 
@@ -86,6 +91,8 @@ func main() {
 	fmt.Printf("--- REPORT ---\nSuccess: %d\nFailures: %d\n", successCount, failCount)
 }
 
+// ... (Rest of your functions doNormal, doBackendError, etc. remain exactly the same) ...
+
 func doNormal(client *http.Client) error {
 	resp, err := client.Get(*target)
 	if err != nil {
@@ -99,14 +106,11 @@ func doNormal(client *http.Client) error {
 }
 
 func doBackendError(client *http.Client) error {
-	// Force a 500 from the backend
 	resp, err := client.Get(*target + "?code=500")
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	// We expect 500, so if we get it, it's actually a "success" for the tool (proxy handled it)
-	// But let's count it as error to track volume of errors
 	if resp.StatusCode == 500 {
 		return nil
 	}
@@ -114,7 +118,6 @@ func doBackendError(client *http.Client) error {
 }
 
 func doBackendSlow(client *http.Client) error {
-	// Force 2s latency (Proxy timeout is usually 5s)
 	resp, err := client.Get(*target + "?sleep=2000")
 	if err != nil {
 		return err
@@ -124,24 +127,22 @@ func doBackendSlow(client *http.Client) error {
 }
 
 func doMalformed() error {
-	conn, err := net.Dial("tcp", "localhost:8089")
+	conn, err := net.DialTimeout("tcp", "localhost:8089", 2*time.Second)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	// Send garbage
 	garbage := []string{
 		"GET / HTTP/1.1\r\nHost: localhost\r\nBad-Header\r\n\r\n",
 		"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n\r\n",
 		"NotMethod / HTTP/1.1\r\n\r\n",
-		"GET / \r\n\r\n", // Missing version
+		"GET / \r\n\r\n",
 	}
 
 	msg := garbage[rand.Intn(len(garbage))]
 	fmt.Fprintf(conn, msg)
 
-	// Read response (don't care content, just that it didn't hang forever)
 	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	reader := bufio.NewReader(conn)
 	_, _ = reader.ReadString('\n')
@@ -149,18 +150,16 @@ func doMalformed() error {
 }
 
 func doSlowloris() error {
-	conn, err := net.Dial("tcp", "localhost:8089")
+	conn, err := net.DialTimeout("tcp", "localhost:8089", 2*time.Second)
 	if err != nil {
 		return err
 	}
-	// Do not defer close immediately, we want to hold it open
 
 	fmt.Fprintf(conn, "GET /analytics HTTP/1.1\r\n")
 	fmt.Fprintf(conn, "Host: localhost:8089\r\n")
 	fmt.Fprintf(conn, "User-Agent: Slowloris\r\n")
 	fmt.Fprintf(conn, "Content-Length: 42\r\n")
 
-	// Send header slowly
 	go func() {
 		defer conn.Close()
 		for i := 0; i < 10; i++ {
@@ -169,7 +168,6 @@ func doSlowloris() error {
 				return
 			}
 		}
-		// Never finish the request or finish very late
 		fmt.Fprintf(conn, "\r\n")
 	}()
 	return nil

@@ -18,7 +18,10 @@ func main() {
 	defer config.Logger.Sync()
 	watcher := config.InitWatcher()
 	defer watcher.Close()
-	notifier := config.LoadConfig()
+	notifier, err := config.LoadConfig()
+	if err != nil {
+		config.Logger.Fatal("Failed to load initial config", zap.Error(err))
+	}
 	backends := config.CreateBackends(notifier)
 	// create a reverse proxy
 	bkPool := px.NewBackendPool(backends)
