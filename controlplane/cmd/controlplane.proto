@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package controlplane;
+option go_package = "controlplane/cmd/configpb";
+
+import "google/protobuf/timestamp.proto";
+
+// =====================
+// Core config messages
+// =====================
+
+message Service {
+  string name = 1;
+  repeated Route routes = 2;
+  repeated Endpoint endpoints = 3;
+}
+
+message Route {
+  string path = 1;
+  repeated string methods = 2;
+}
+
+message Endpoint {
+  string address = 1;
+}
+
+message ProxyConfig {
+  int32 port = 1;
+  int32 metrics_port = 2;
+  int32 health_check_interval_seconds = 3;
+}
+
+message Config {
+  repeated Service services = 1;
+  ProxyConfig proxy_config = 2;
+  google.protobuf.Timestamp last_updated = 3;
+  string version = 4;
+}
+
+// =====================
+// Control plane API
+// =====================
+message SubscribeRequest {
+  string proxy_id = 1;
+  string last_seen_version = 2;
+}
+
+service ControlPlane {
+  rpc Subscribe(SubscribeRequest) returns (stream Config);
+}

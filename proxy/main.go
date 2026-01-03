@@ -4,13 +4,17 @@ package main
 import (
 	config "ananse/config"
 	px "ananse/pkg/proxy"
+	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
@@ -54,6 +58,20 @@ func main() {
 
 	config.ConfigNotifier(bkPool, health, watcher)
 
+	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+	state := &ProxyState{}
+	con, err := NewConfigClient("localhost:50051", "test-proxy-1", state.HandleConfig)
+	if err != nil {
+		config.Logger.Error("this is the error that occured", zap.Error(err))
+	}
+	// Run subscription in background
+	go con.SubscribeWithRetry(context.Background())
+
+	config.Logger.Info("this is the lastapplied config", zap.Any("last applied config", state.lastAppliedConfig))
 	config.Logger.Info("Proxy server is started",
 		zap.Int("port", notifier.Server.Port),
 	)

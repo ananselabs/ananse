@@ -24,17 +24,26 @@ func NewHealthCheck(pool *BackendPool, checkInterval time.Duration) *Health {
 func (h *Health) Check() {
 	ticker := time.NewTicker(h.getInterval()) // ← Thread-safe read
 	defer ticker.Stop()
-
+	var healthSem = make(chan struct{}, 20)
 	for {
 		select {
 		case <-ticker.C:
-			backends := h.pool.GetAllBackends()
-			for _, backend := range backends {
-				shouldCheck, _ := h.pool.GetCircuitState(backend.Name, h.getInterval())
-				if !shouldCheck {
-					continue
+			services := h.pool.GetAllServices()
+			for _, service := range services {
+				backends, exist := h.pool.GetBackendsForService(service)
+				if exist {
+					for _, backend := range backends {
+						shouldCheck, _ := h.pool.GetCircuitState(service, backend.Name, h.getInterval())
+						if !shouldCheck {
+							continue
+						}
+						go func(s string, b *Backend) {
+							healthSem <- struct{}{}
+							defer func() { <-healthSem }()
+							h.checkBackend(s, b)
+						}(service, backend)
+					}
 				}
-				go h.checkBackend(backend)
 			}
 		case <-h.stopCh:
 			return
@@ -42,7 +51,7 @@ func (h *Health) Check() {
 	}
 }
 
-func (h *Health) checkBackend(backend *Backend) {
+func (h *Health) checkBackend(service string, backend *Backend) {
 	healthURL := *backend.TargetUrl
 	healthURL.Path = "/health"
 
@@ -50,15 +59,15 @@ func (h *Health) checkBackend(backend *Backend) {
 	resp, err := client.Get(healthURL.String())
 
 	if err != nil {
-		h.pool.UpdateBackendStatus(backend.Name, false, h.getInterval())
+		h.pool.UpdateBackendStatus(service, backend.Name, false, h.getInterval())
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		h.pool.UpdateBackendStatus(backend.Name, true, h.getInterval())
+		h.pool.UpdateBackendStatus(service, backend.Name, true, h.getInterval())
 	} else {
-		h.pool.UpdateBackendStatus(backend.Name, false, h.getInterval())
+		h.pool.UpdateBackendStatus(service, backend.Name, false, h.getInterval())
 	}
 }
 

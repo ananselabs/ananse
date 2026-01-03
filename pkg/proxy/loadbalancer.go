@@ -11,28 +11,30 @@ type LoadBalancer struct {
 	mu       sync.RWMutex
 	pool     *BackendPool
 	current  int
+	// Track round-robin index per service
+	rrIndices map[string]int
 }
 
 func NewLoadBalancer(strategy string, pool *BackendPool) *LoadBalancer {
 	return &LoadBalancer{Strategy: strategy, pool: pool}
 }
 
-func (lb *LoadBalancer) GetNextPeer() (*Backend, error) {
+func (lb *LoadBalancer) GetNextPeer(service string) (*Backend, error) {
 	switch lb.Strategy {
 	case "least-connections":
-		backend, err := lb.getNextLeastConnection()
+		backend, err := lb.getNextLeastConnection(service)
 		if err != nil {
 			return nil, err
 		}
 		return backend, nil
 	case "round-robin":
-		backend := lb.getNextRoundRobin()
+		backend := lb.getNextRoundRobin(service)
 		if backend == nil {
 			return nil, errors.New("no healthy backends")
 		}
 		return backend, nil
 	default:
-		backend := lb.getNextRoundRobin()
+		backend := lb.getNextRoundRobin(service)
 		if backend == nil {
 			return nil, errors.New("no healthy backends")
 		}
@@ -40,46 +42,51 @@ func (lb *LoadBalancer) GetNextPeer() (*Backend, error) {
 	}
 }
 
-func (lb *LoadBalancer) getNextRoundRobin() *Backend {
+func (lb *LoadBalancer) getNextRoundRobin(service string) *Backend {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	backends, ok := lb.pool.GetBackendsForService(service)
+	if !ok || len(backends) == 0 {
+		return nil
+	}
 
-	start := lb.current
-	backendCount := lb.pool.GetBackendCount()
+	// Initialize cursor for this service if missing
+	if _, exists := lb.rrIndices[service]; !exists {
+		lb.rrIndices[service] = 0
+	}
 
-	for i := 0; i < backendCount; i++ {
-		idx := (start + i) % backendCount
-		backend := lb.pool.GetBackendAtIndex(idx)
-		if backend != nil && backend.IsHealthy() {
-			lb.current = (idx + 1) % backendCount
-			return backend
+	start := lb.rrIndices[service]
+	for i := 0; i < len(backends); i++ {
+		idx := (start + i) % len(backends)
+		b := backends[idx]
+		if b.IsHealthy() {
+			lb.rrIndices[service] = (idx + 1) % len(backends)
+			return b
 		}
 	}
+
 	return nil
 }
 
-func (lb *LoadBalancer) getNextLeastConnection() (*Backend, error) {
-	// Get all backends (already has locking)
-	backends := lb.pool.GetAllBackends()
+func (lb *LoadBalancer) getNextLeastConnection(service string) (*Backend, error) {
+	backends, ok := lb.pool.GetBackendsForService(service)
+	if !ok || len(backends) == 0 {
+		return nil, errors.New("service not found or no backends")
+	}
 
-	var leastConnected *Backend
-	for _, backend := range backends {
-		if !backend.IsHealthy() {
+	var least *Backend
+	for _, b := range backends {
+		if !b.IsHealthy() {
 			continue
 		}
-
-		if leastConnected == nil {
-			leastConnected = backend
-			continue
-		}
-
-		if backend.GetActiveRequests() < leastConnected.GetActiveRequests() {
-			leastConnected = backend
+		if least == nil || b.GetActiveRequests() < least.GetActiveRequests() {
+			least = b
 		}
 	}
 
-	if leastConnected == nil {
+	if least == nil {
 		return nil, errors.New("no healthy backends")
 	}
-	return leastConnected, nil
+
+	return least, nil
 }

@@ -105,6 +105,16 @@ func CreateBackends(config Config) []*px.Backend {
 	}
 	return backends
 }
+
+func RegisterServices(config Config) []*Service {
+	var services []*Service
+
+	for _, service := range config.Services {
+		services = append(services, &service)
+	}
+	return services
+}
+
 func InitWatcher() *fsnotify.Watcher {
 	logger, err := zap.NewProduction()
 	if err != nil {

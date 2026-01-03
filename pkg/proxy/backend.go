@@ -102,65 +102,74 @@ func (b *Backend) GetCircuitState(checkInterval time.Duration) (shouldCheck bool
 }
 
 type BackendPool struct {
-	Backends []*Backend
+	Backends map[string][]*Backend
 	mu       sync.RWMutex
 }
 
-func NewBackendPool(backends []*Backend) *BackendPool {
+func NewBackendPool(backends map[string][]*Backend) *BackendPool {
 	bp := &BackendPool{
 		Backends: backends,
 	}
 	return bp
 }
 
-func (bp *BackendPool) UpdateBackend(newBackends []*Backend) {
+func (bp *BackendPool) UpdateBackends(newBackends map[string][]*Backend) {
 	bp.mu.Lock()
 	oldBackends := bp.Backends
 	bp.Backends = newBackends
 	bp.mu.Unlock()
 
-	// Drain removed backends asynchronously
 	go bp.drainRemovedBackends(oldBackends, newBackends)
 }
 
-func (bp *BackendPool) drainRemovedBackends(old, new []*Backend) {
-	removed := bp.findRemovedBackends(old, new)
+func (bp *BackendPool) drainRemovedBackends(oldMap, newMap map[string][]*Backend) {
+	removed := bp.findRemovedBackends(oldMap, newMap)
 
 	for _, backend := range removed {
-		// Wait for active requests to reach 0
-		timeout := time.After(30 * time.Second)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
+		b := backend // capture
 
-		for {
-			select {
-			case <-timeout:
-				fmt.Printf("Backend %s still has %d active requests after 30s, force closing",
-					backend.Name, backend.GetActiveRequests())
-				backend.Close()
-				return
+		go func() {
+			timeout := time.After(30 * time.Second)
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
 
-			case <-ticker.C:
-				if backend.GetActiveRequests() == 0 {
-					fmt.Printf("Backend %s drained, closing connections", backend.Name)
-					backend.Close()
+			for {
+				select {
+				case <-timeout:
+					fmt.Printf(
+						"Backend %s still has %d active requests after 30s, force closing\n",
+						b.Name, b.GetActiveRequests(),
+					)
+					b.Close()
 					return
+
+				case <-ticker.C:
+					if b.GetActiveRequests() == 0 {
+						fmt.Printf("Backend %s drained, closing\n", b.Name)
+						b.Close()
+						return
+					}
 				}
 			}
-		}
+		}()
 	}
 }
 
-func (bp *BackendPool) findRemovedBackends(old, new []*Backend) []*Backend {
-	newMap := make(map[string]bool)
-	for _, b := range new {
-		newMap[b.Name] = true
-	}
+func (bp *BackendPool) findRemovedBackends(oldMap, newMap map[string][]*Backend) []*Backend {
 
 	var removed []*Backend
-	for _, b := range old {
-		if !newMap[b.Name] {
-			removed = append(removed, b)
+
+	for service, oldBackends := range oldMap {
+		newBackends := make(map[string]struct{})
+
+		for _, b := range newMap[service] {
+			newBackends[b.Name] = struct{}{}
+		}
+
+		for _, b := range oldBackends {
+			if _, exists := newBackends[b.Name]; !exists {
+				removed = append(removed, b)
+			}
 		}
 	}
 	return removed
@@ -174,85 +183,92 @@ func (b *Backend) Close() {
 	b.mu.Unlock()
 }
 
-func (bp *BackendPool) GetBackendByName(name string) *Backend {
-	// Assuming Backends list doesn't change after init for now,
-	// or caller holds lock if it does.
-	// Ideally this should lock, but internal usage often holds lock.
-	// Let's make it safe.
+func (bp *BackendPool) GetBackendsForService(service string) ([]*Backend, bool) {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
-	for _, b := range bp.Backends {
-		if b.Name == name {
-			return b
-		}
+
+	backends, ok := bp.Backends[service]
+	if !ok {
+		return nil, false
 	}
-	return nil
+
+	out := make([]*Backend, len(backends))
+	copy(out, backends)
+	return out, true
 }
 
-// GetBackendCount returns number of backends
-func (bp *BackendPool) GetBackendCount() int {
+func (bp *BackendPool) GetServiceBackendCount(service string) (int, bool) {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
-	return len(bp.Backends)
+
+	backends, ok := bp.Backends[service]
+	if !ok {
+		return 0, false
+	}
+	return len(backends), true
 }
 
-// GetBackendAtIndex returns backend at given index (thread-safe)
-func (bp *BackendPool) GetBackendAtIndex(idx int) *Backend {
+// GetTotalBackendCount returns number of backends
+func (bp *BackendPool) GetTotalBackendCount() int {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
-	if idx < 0 || idx >= len(bp.Backends) {
-		return nil
-	}
-	return bp.Backends[idx]
-}
 
-// IsBackendHealthy checks if backend at index is healthy
-func (bp *BackendPool) IsBackendHealthy(idx int) bool {
-	// No need to lock pool to check backend health if backend has its own lock
-	// But we need to safely get the backend
-	b := bp.GetBackendAtIndex(idx)
-	if b == nil {
-		return false
+	count := 0
+	for _, backends := range bp.Backends {
+		count += len(backends)
 	}
-	return b.IsHealthy()
-}
-
-func (bp *BackendPool) GetPool() []*Backend {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	return bp.Backends
-}
-
-func (bp *BackendPool) GetBkActiveRequests(index int) int32 {
-	b := bp.GetBackendAtIndex(index)
-	if b == nil {
-		return 0
-	}
-	return b.GetActiveRequests()
+	return count
 }
 
 func (bp *BackendPool) GetAllBackends() []*Backend {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
 
-	backends := make([]*Backend, len(bp.Backends))
-	copy(backends, bp.Backends)
-	return backends
+	var result []*Backend
+	for _, backends := range bp.Backends {
+		result = append(result, backends...)
+	}
+	return result
 }
 
-func (bp *BackendPool) GetCircuitState(name string, checkinterval time.Duration) (shouldCheck bool, state State) {
-	// Lock pool to find backend? GetBackendByName locks.
-	backend := bp.GetBackendByName(name)
-	if backend == nil {
+func (bp *BackendPool) GetAllServices() []string {
+	bp.mu.RLock()
+	defer bp.mu.Unlock()
+	var services []string
+	for service, _ := range bp.Backends {
+		services = append(services, service)
+	}
+	return services
+}
+
+func (bp *BackendPool) GetCircuitState(service string, backendName string, checkInterval time.Duration) (bool, State) {
+
+	backends, ok := bp.GetBackendsForService(service)
+	if !ok {
 		return false, Closed
 	}
-	return backend.GetCircuitState(checkinterval)
+
+	for _, b := range backends {
+		if b.Name == backendName {
+			return b.GetCircuitState(checkInterval)
+		}
+	}
+	return false, Closed
 }
 
-func (bp *BackendPool) UpdateBackendStatus(name string, healthy bool, checkInterval time.Duration) {
-	backend := bp.GetBackendByName(name)
-	if backend == nil {
+func (bp *BackendPool) UpdateBackendStatus(service string, backendName string, healthy bool, checkInterval time.Duration) {
+	bp.mu.RLock()
+	backends, ok := bp.Backends[service]
+	bp.mu.RUnlock()
+
+	if !ok {
 		return
 	}
-	backend.UpdateStatus(healthy, checkInterval)
+
+	for _, b := range backends {
+		if b.Name == backendName {
+			b.UpdateStatus(healthy, checkInterval)
+			return
+		}
+	}
 }
