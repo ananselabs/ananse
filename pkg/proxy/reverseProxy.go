@@ -181,7 +181,7 @@ func ModifyResponse() func(*http.Response) error {
 			Duration:   duration, //TODO: look at the time between when the request finished processing and when the response was sent
 		}
 		jsonLog, _ := json.Marshal(respLog)
-		Logger.Info("Response Received: %s", zap.String("response", string(jsonLog)))
+		Logger.Info("Response Received: ", zap.String("response", string(jsonLog)))
 		return nil
 	}
 }
