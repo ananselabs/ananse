@@ -2,7 +2,6 @@
 package proxy
 
 import (
-	"context"
 	"io"
 	"log"
 	"net/http"
@@ -18,15 +17,17 @@ type ProxyHandler struct {
 	health         *Health
 	proxy          *httputil.ReverseProxy
 	modifyResponse func(*http.Response) error
+	router         *Router
 }
 
-func NewProxyHandler(lb *LoadBalancer, pool *BackendPool, health *Health, proxy *httputil.ReverseProxy) *ProxyHandler {
+func NewProxyHandler(router *Router, lb *LoadBalancer, pool *BackendPool, health *Health, proxy *httputil.ReverseProxy) *ProxyHandler {
 	return &ProxyHandler{
 		lb:             lb,
 		pool:           pool,
 		health:         health,
 		proxy:          proxy,
-		modifyResponse: ModifyResponse(), // Use the internal one or pass it in
+		modifyResponse: ModifyResponse(),
+		router:         router,
 	}
 }
 
@@ -35,9 +36,14 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer RecordRequestEnd()
 	startTime := time.Now()
 	maxRetries := 3
+	serviceName := h.router.FindService(r)
+	if serviceName == "" {
+		http.Error(w, "No matching route", http.StatusNotFound)
+		return
+	}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		backend, err := h.lb.GetNextPeer()
+		backend, err := h.lb.GetNextPeer(serviceName)
 		if err != nil {
 			if backend == nil {
 				log.Printf("No backend available")
@@ -55,8 +61,10 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		backend.IncrementActiveRequests()
 
 		// Setup context
-		ctx := context.WithValue(r.Context(), "backend", backend)
-		ctx = context.WithValue(ctx, "request-timer", time.Now().UTC())
+		ctx := r.Context()
+		ctx = WithContextKey(ctx, backendKey, backend)
+		ctx = WithContextKey(ctx, requestTimerKey, time.Now().UTC())
+		ctx = WithContextKey(ctx, serviceKey, serviceName)
 
 		// Clone the request ensures we don't modify the original request for retries
 		outReq := r.Clone(ctx)
@@ -75,7 +83,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			RecordBackendFailure(backend.Name)
 			backend.DecrementActiveRequests()
-			h.pool.UpdateBackendStatus(backend.Name, false, h.health.GetHealthCheckInterval())
+			h.pool.UpdateBackendStatus(serviceName, backend.Name, false, h.health.GetHealthCheckInterval())
 			log.Printf("Backend %s failed: %v, retrying...", backend.Name, err)
 			continue
 		}

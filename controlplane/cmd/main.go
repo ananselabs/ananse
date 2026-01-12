@@ -1,8 +1,8 @@
 package main
 
 import (
-	"ananse/config"
 	pb "ananse/controlplane/cmd/configpb"
+	"ananse/pkg/proxy"
 	"net"
 	"os"
 	"os/signal"
@@ -15,31 +15,31 @@ import (
 
 func main() {
 	// Initialize logger
-	if config.Logger == nil {
-		config.InitLogger()
+	if proxy.Logger == nil {
+		proxy.InitLogger()
 	}
-	defer config.Logger.Sync()
+	defer proxy.Logger.Sync()
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
-		config.Logger.Fatal("failed to listen", zap.Error(err))
+		proxy.Logger.Fatal("failed to listen", zap.Error(err))
 	}
 
 	grpcServer := grpc.NewServer()
 	controlPlaneServer, err := NewServer()
 	if err != nil {
-		config.Logger.Fatal("failed to init control plane", zap.Error(err))
+		proxy.Logger.Fatal("failed to init control plane", zap.Error(err))
 	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		config.Logger.Fatal("failed to create watcher", zap.Error(err))
+		proxy.Logger.Fatal("failed to create watcher", zap.Error(err))
 	}
 	defer watcher.Close()
 
 	// Watch config file
 	if err := watcher.Add("config/config.yml"); err != nil {
-		config.Logger.Fatal("failed to watch config file", zap.Error(err))
+		proxy.Logger.Fatal("failed to watch config file", zap.Error(err))
 	}
 
 	// Start config change notifier
@@ -48,12 +48,12 @@ func main() {
 	// Register your service implementation
 	pb.RegisterControlPlaneServer(grpcServer, controlPlaneServer)
 
-	config.Logger.Info("Control plane listening", zap.String("address", ":50051"))
+	proxy.Logger.Info("Control plane listening", zap.String("address", ":50051"))
 
 	// Graceful shutdown
 	go func() {
 		if err := grpcServer.Serve(lis); err != nil {
-			config.Logger.Fatal("failed to serve", zap.Error(err))
+			proxy.Logger.Fatal("failed to serve", zap.Error(err))
 		}
 	}()
 
@@ -62,7 +62,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
-	config.Logger.Info("Shutting down gracefully...")
+	proxy.Logger.Info("Shutting down gracefully...")
 	grpcServer.GracefulStop()
-	config.Logger.Info("Server stopped")
+	proxy.Logger.Info("Server stopped")
 }

@@ -55,6 +55,7 @@ func (h *Health) checkBackend(service string, backend *Backend) {
 	healthURL := *backend.TargetUrl
 	healthURL.Path = "/health"
 
+	// TODO: refactor to make the timeout configurable
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(healthURL.String())
 

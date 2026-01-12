@@ -4,7 +4,11 @@ package proxy
 import (
 	"net/url"
 	"strings"
+
+	"go.uber.org/zap"
 )
+
+var Logger *zap.Logger
 
 // Helper function (from httputil internals)
 func singleJoiningSlash(a, b string) string {
@@ -25,4 +29,12 @@ func MustParse(rawurl string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+func InitLogger() {
+	var err error
+	Logger, err = zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
 }

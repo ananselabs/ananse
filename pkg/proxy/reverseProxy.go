@@ -7,16 +7,30 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
+
+	"go.uber.org/zap"
 )
+
+type serviceKeyType struct{}
+type backendKeyType struct{}
+
+type requestTimerKeyType struct{}
+
+var requestTimerKey = requestTimerKeyType{}
+var serviceKey = serviceKeyType{}
+var backendKey = backendKeyType{}
+
+func WithContextKey(ctx context.Context, key interface{}, val interface{}) context.Context {
+	return context.WithValue(ctx, key, val)
+}
 
 func Director() func(r *http.Request) {
 	return func(request *http.Request) {
-		backend, ok := request.Context().Value("backend").(*Backend)
+		backend, ok := request.Context().Value(backendKey).(*Backend)
 		if !ok {
 			return
 		}
@@ -24,7 +38,7 @@ func Director() func(r *http.Request) {
 		ctx := request.Context()
 		target := backend.TargetUrl
 		request.URL.Scheme = target.Scheme
-		request.URL.Host = target.Host
+		request.Host = target.Host
 		request.URL.Path = singleJoiningSlash(target.Path, request.URL.Path)
 
 		//add custom headers
@@ -60,12 +74,12 @@ func Director() func(r *http.Request) {
 			RemoteAddr: request.RemoteAddr,
 			Timestamp:  time.Now().UTC(),
 		}
-		if startTime, ok := ctx.Value("request-timer").(time.Time); ok {
+		if startTime, ok := ctx.Value(requestTimerKey).(time.Time); ok {
 			reqLog.ProcessingTime = time.Since(startTime)
-			reqLog.UpstreamTime = time.Since(ctx.Value("request-timer").(time.Time))
+			reqLog.UpstreamTime = time.Since(ctx.Value(requestTimerKey).(time.Time))
 		}
 		jsonLog, _ := json.Marshal(reqLog)
-		log.Printf("Request Received: %s", jsonLog)
+		Logger.Info("Request Received: ", zap.String("request", string(jsonLog)))
 	}
 }
 
@@ -84,17 +98,19 @@ func Transport() *http.Transport {
 
 func ErrorHandler(bkPool *BackendPool, health *Health) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
-		backend, ok := r.Context().Value("backend").(*Backend)
+		service, _ := r.Context().Value(serviceKey).(string)
+		backend, ok := r.Context().Value(backendKey).(*Backend)
 		if ok {
-			bkPool.UpdateBackendStatus(backend.Name, false, health.GetHealthCheckInterval())
-			log.Printf("proxy error (rid=%s, backend=%s): %v",
-				r.Header.Get("X-Request-ID"),
-				backend.Name,
-				err)
+			bkPool.UpdateBackendStatus(service, backend.Name, false, health.GetHealthCheckInterval())
+			Logger.Info("proxy error,  backend down: ",
+				zap.String("service", service),
+				zap.String("rid", r.Header.Get("X-Request-ID")),
+				zap.String("backend", backend.Name),
+				zap.Error(err))
 		} else {
-			log.Printf("proxy error (rid=%s): %v",
-				r.Header.Get("X-Request-ID"),
-				err)
+			Logger.Info("proxy error (rid=%s): %v",
+				zap.String("rid", r.Header.Get("X-Request-ID")),
+				zap.Error(err))
 		}
 
 		if errors.Is(err, context.Canceled) {
@@ -122,10 +138,10 @@ func ModifyResponse() func(*http.Response) error {
 			response.Body.Close()
 		}
 		ctx := response.Request.Context()
-		startTime, ok := ctx.Value("request-timer").(time.Time)
+		startTime, ok := ctx.Value(requestTimerKey).(time.Time)
 		var duration time.Duration
 		if !ok {
-			log.Printf("Warning: request-timer not found in context")
+			Logger.Info("Warning: request-timer not found in context")
 			duration = 0
 		} else {
 			duration = time.Since(startTime)
@@ -165,7 +181,7 @@ func ModifyResponse() func(*http.Response) error {
 			Duration:   duration, //TODO: look at the time between when the request finished processing and when the response was sent
 		}
 		jsonLog, _ := json.Marshal(respLog)
-		log.Printf("Response Received: %s", jsonLog)
+		Logger.Info("Response Received: %s", zap.String("response", string(jsonLog)))
 		return nil
 	}
 }

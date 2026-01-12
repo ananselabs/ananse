@@ -18,7 +18,6 @@ import (
 var (
 	reloadTimer *time.Timer
 	reloadMutex sync.Mutex
-	Logger      *zap.Logger
 )
 
 type Route struct {
@@ -45,14 +44,6 @@ type ProxyConfig struct {
 	Port                int    `mapstructure:"port"`
 	MetricsPort         int    `mapstructure:"metrics_port"`
 	HealthCheckInterval string `mapstructure:"health_check_interval"`
-}
-
-func InitLogger() {
-	var err error
-	Logger, err = zap.NewProduction()
-	if err != nil {
-		panic(err)
-	}
 }
 
 func LoadConfig() (Config, error) {

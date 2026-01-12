@@ -2,8 +2,8 @@
 package main
 
 import (
-	"ananse/config"
 	pb "ananse/controlplane/cmd/configpb"
+	px "ananse/pkg/proxy"
 	"errors"
 	"fmt"
 	"strings"
@@ -48,7 +48,7 @@ func NewServer() (*Server, error) {
 
 func (s *Server) Subscribe(req *pb.SubscribeRequest, stream pb.ControlPlane_SubscribeServer) error {
 	//currently LastSeenVersion is ignored, used only for debugging
-	config.Logger.Info("New subscriber",
+	px.Logger.Info("New subscriber",
 		zap.String("proxy_id", req.ProxyId),
 		zap.String("last_seen_version", req.LastSeenVersion))
 
@@ -68,7 +68,7 @@ func (s *Server) Subscribe(req *pb.SubscribeRequest, stream pb.ControlPlane_Subs
 		close(configChan)
 		s.mu.Unlock()
 
-		config.Logger.Info("Subscriber disconnected", zap.String("proxy_id", req.ProxyId))
+		px.Logger.Info("Subscriber disconnected", zap.String("proxy_id", req.ProxyId))
 	}()
 
 	// always send latest snapshot once
@@ -106,7 +106,7 @@ func (s *Server) UpdateConfig(cfg *pb.Config) {
 	for proxyID, ch := range s.subscribers {
 		select {
 		case ch <- cfg:
-			config.Logger.Info("Sent config update",
+			px.Logger.Info("Sent config update",
 				zap.String("proxy_id", proxyID),
 				zap.String("version", cfg.Version),
 			)
@@ -117,7 +117,7 @@ func (s *Server) UpdateConfig(cfg *pb.Config) {
 			default:
 			}
 			ch <- cfg
-			config.Logger.Warn("Subscriber was slow; overwrote pending config",
+			px.Logger.Warn("Subscriber was slow; overwrote pending config",
 				zap.String("proxy_id", proxyID),
 				zap.String("version", cfg.Version),
 			)
@@ -126,8 +126,8 @@ func (s *Server) UpdateConfig(cfg *pb.Config) {
 }
 
 func LoadConfig() (*pb.Config, error) {
-	if config.Logger == nil {
-		config.InitLogger()
+	if px.Logger == nil {
+		px.InitLogger()
 	}
 
 	viper.SetConfigName("config")
@@ -313,12 +313,12 @@ func (s *Server) ConfigNotifier(watcher *fsnotify.Watcher) {
 						reloadTimer.Stop()
 					}
 					reloadTimer = time.AfterFunc(500*time.Millisecond, func() {
-						config.Logger.Info("Config changed, reloading",
+						px.Logger.Info("Config changed, reloading",
 							zap.String("file", event.Name),
 							zap.String("current_version", s.currentConfig.Version))
 						cfg, err := LoadConfig()
 						if err != nil {
-							config.Logger.Error("Reload failed", zap.Error(err))
+							px.Logger.Error("Reload failed", zap.Error(err))
 							return
 						}
 						s.UpdateConfig(cfg)
@@ -329,7 +329,7 @@ func (s *Server) ConfigNotifier(watcher *fsnotify.Watcher) {
 				if !ok {
 					return
 				}
-				config.Logger.Error("Watcher error", zap.Error(err))
+				px.Logger.Error("Watcher error", zap.Error(err))
 			}
 		}
 	}()
