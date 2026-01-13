@@ -233,7 +233,7 @@ func (bp *BackendPool) GetAllBackends() []*Backend {
 
 func (bp *BackendPool) GetAllServices() []string {
 	bp.mu.RLock()
-	defer bp.mu.Unlock()
+	defer bp.mu.RUnlock()
 	var services []string
 	for service, _ := range bp.Backends {
 		services = append(services, service)

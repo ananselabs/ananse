@@ -4,7 +4,7 @@ proxy:
   health_check_interval: 3
 
 services:
-  - name: analytics-upstream
+  - name: analytics-services
     endpoints:
       - address: "localhost:5004"
       - address: "localhost:5003"

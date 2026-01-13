@@ -391,7 +391,7 @@ func (p *ProxyState) IsReady() bool {
 func (p *ProxyState) UpdateMetrics() {
 	p.mu.RLock()
 	pool := p.BackendPool
-	p.mu.RUnlock()
+	defer p.mu.RUnlock()
 
 	if pool == nil {
 		return
@@ -400,4 +400,10 @@ func (p *ProxyState) UpdateMetrics() {
 	for _, backend := range pool.GetAllBackends() {
 		UpdateBackendConnections(backend.Name, backend.GetActiveRequests())
 	}
+}
+
+func (p *ProxyState) GetVersion() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.LastAppliedVersion
 }

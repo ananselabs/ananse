@@ -94,7 +94,7 @@ func main() {
 
 	px.Logger.Info("Proxy server starting",
 		zap.Int("port", port),
-		zap.String("config_version", state.LastAppliedVersion),
+		zap.String("config_version", state.GetVersion()),
 	)
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux); err != nil {
