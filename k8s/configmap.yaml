@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ananse-config
+  namespace: ananse
+data:
+  config.yml: |
+    proxy:
+      port: 8089
+      metrics_port: 9090
+      health_check_interval: 3
+
+    services:
+      - name: analytics-services
+        endpoints:
+          - address: "analytics:5004"
+        routes:
+          - path: "/analytics"
+            methods: ["GET", "POST"]
+      - name: auth-services
+        endpoints:
+          - address: "auth:5001"
+        routes:
+          - path: "/auth"
+            methods: ["GET", "POST"]
+      - name: payments-services
+        endpoints:
+          - address: "payments:5003"
+        routes:
+          - path: "/payments"
+            methods: ["GET", "POST"]
+      - name: users-services
+        endpoints:
+          - address: "users:5002"
+        routes:
+          - path: "/users"
+            methods: ["GET", "POST"]
+      - name: echo-services
+        endpoints:
+          - address: "echo:4199"
+        routes:
+          - path: "/echo"
+            methods: ["GET"]
