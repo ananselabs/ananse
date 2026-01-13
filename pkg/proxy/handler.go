@@ -8,6 +8,8 @@ import (
 	"net/http/httputil"
 	"strconv"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // ProxyHandler handles the incoming requests and manages retries/load balancing
@@ -36,9 +38,10 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer RecordRequestEnd()
 	startTime := time.Now()
 	maxRetries := 3
-	serviceName := h.router.FindService(r)
-	if serviceName == "" {
+	serviceName, err := h.router.FindService(r)
+	if err != nil {
 		http.Error(w, "No matching route", http.StatusNotFound)
+		Logger.Error("an error occured", zap.Error(err))
 		return
 	}
 

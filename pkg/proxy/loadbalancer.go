@@ -16,7 +16,7 @@ type LoadBalancer struct {
 }
 
 func NewLoadBalancer(strategy string, pool *BackendPool) *LoadBalancer {
-	return &LoadBalancer{Strategy: strategy, pool: pool}
+	return &LoadBalancer{Strategy: strategy, pool: pool, rrIndices: make(map[string]int)}
 }
 
 func (lb *LoadBalancer) GetNextPeer(service string) (*Backend, error) {
@@ -45,6 +45,9 @@ func (lb *LoadBalancer) GetNextPeer(service string) (*Backend, error) {
 func (lb *LoadBalancer) getNextRoundRobin(service string) *Backend {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	if service == "" {
+		return nil
+	}
 	backends, ok := lb.pool.GetBackendsForService(service)
 	if !ok || len(backends) == 0 {
 		return nil

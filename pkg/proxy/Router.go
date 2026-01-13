@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 )
@@ -10,16 +11,16 @@ type Router struct {
 	routingTable *RoutingTable
 }
 
-func (r *Router) FindService(req *http.Request) string {
+func (r *Router) FindService(req *http.Request) (string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	if methods, ok := r.routingTable.pathIndex[req.URL.Path]; ok {
 		if serviceName, ok := methods[req.Method]; ok {
-			return serviceName
+			return serviceName, nil
 		}
 	}
-	return ""
+	return "", fmt.Errorf("no service found for this route")
 }
 
 func (r *Router) UpdateRoutes(rt *RoutingTable) {

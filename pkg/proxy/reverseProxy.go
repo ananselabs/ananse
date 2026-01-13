@@ -38,6 +38,7 @@ func Director() func(r *http.Request) {
 		ctx := request.Context()
 		target := backend.TargetUrl
 		request.URL.Scheme = target.Scheme
+		request.URL.Host = target.Host
 		request.Host = target.Host
 		request.URL.Path = singleJoiningSlash(target.Path, request.URL.Path)
 

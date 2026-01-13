@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -74,6 +78,33 @@ func main() {
 		w.Write([]byte(msg))
 	})
 
-	log.Println("User service listening on :5002")
-	log.Fatal(http.ListenAndServe(":5002", nil))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "5002"
+	}
+
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: nil,
+	}
+
+	go func() {
+		log.Printf("User service listening on :%s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %s\n", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal("Server forced to shutdown:", err)
+	}
+
+	log.Println("Server exiting")
 }

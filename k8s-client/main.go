@@ -34,13 +34,13 @@ func main() {
 		panic(err.Error())
 	}
 
-	watcher, err := clientset.CoreV1().Endpoints("").Watch(context.TODO(), metav1.ListOptions{})
+	watcher, err := clientset.CoreV1().ConfigMaps("").Watch(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		panic(err)
 	}
 
 	for event := range watcher.ResultChan() {
-		service, ok := event.Object.(*v1.Endpoints)
+		service, ok := event.Object.(*v1.ConfigMap)
 		if !ok {
 			fmt.Printf("unexpected type %T\n", event.Object)
 			continue

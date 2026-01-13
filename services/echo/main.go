@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -13,8 +18,35 @@ func main() {
 
 	mux.HandleFunc("/echo", echoHandler)
 	mux.HandleFunc("/health", healthHandler)
-	fmt.Println("Server starting on :4199")
-	http.ListenAndServe(":4199", mux)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "4199"
+	}
+
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	go func() {
+		fmt.Printf("Server starting on :%s\n", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %s\n", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal("Server forced to shutdown:", err)
+	}
+
+	log.Println("Server exiting")
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
