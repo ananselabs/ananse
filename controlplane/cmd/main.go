@@ -1,68 +1,109 @@
+// cmd/controlplane/main.go
 package main
 
 import (
-	pb "ananse/controlplane/cmd/configpb"
-	"ananse/pkg/proxy"
-	"net"
+	cp "ananse/controlplane"
+	px "ananse/pkg/proxy"
+	"context"
+	"flag"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/fsnotify/fsnotify"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
 func main() {
-	// Initialize logger
-	if proxy.Logger == nil {
-		proxy.InitLogger()
+	// Initialize logger first
+	if px.Logger == nil {
+		px.InitLogger()
 	}
-	defer proxy.Logger.Sync()
+	defer px.Logger.Sync()
 
-	lis, err := net.Listen("tcp", ":50051")
+	// Command-line flags
+	useK8s := flag.Bool("k8s", false, "Use Kubernetes service discovery")
+	configPath := flag.String("config-path", "./config", "Path to config directory")
+	configName := flag.String("config-name", "config", "Config file name (without extension)")
+	configType := flag.String("config-type", "yaml", "Config file type (yaml, json)")
+	grpcAddr := flag.String("addr", ":50051", "gRPC server address")
+	flag.Parse()
+
+	// Setup context with cancellation
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Create appropriate config watcher
+	var watcher cp.ConfigWatcher
+	if *useK8s {
+		px.Logger.Info("Starting with Kubernetes service discovery")
+		k8sClient, err := cp.NewK8sClient()
+		if err != nil {
+			px.Logger.Fatal("Failed to create K8s client", zap.Error(err))
+		}
+		watcher = k8sClient
+	} else {
+		px.Logger.Info("Starting with file-based configuration",
+			zap.String("config_path", *configPath),
+			zap.String("config_name", *configName))
+		watcher = cp.NewFileClient(*configPath, *configName, *configType)
+	}
+
+	// Start watching for configs
+	configChan := watcher.Watch(ctx)
+
+	// Wait for initial config
+	px.Logger.Info("Waiting for initial configuration...")
+	initialConfig, ok := <-configChan
+	if !ok {
+		px.Logger.Fatal("Config channel closed before receiving initial config")
+	}
+	if initialConfig == nil {
+		px.Logger.Fatal("Received nil initial config")
+	}
+
+	px.Logger.Info("Initial configuration loaded",
+		zap.String("version", initialConfig.Version),
+		zap.Int("services", len(initialConfig.Services)))
+
+	// Create control plane server
+	server, err := NewServer(initialConfig)
 	if err != nil {
-		proxy.Logger.Fatal("failed to listen", zap.Error(err))
+		px.Logger.Fatal("Failed to create server", zap.Error(err))
 	}
 
-	grpcServer := grpc.NewServer()
-	controlPlaneServer, err := NewServer()
-	if err != nil {
-		proxy.Logger.Fatal("failed to init control plane", zap.Error(err))
-	}
-
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		proxy.Logger.Fatal("failed to create watcher", zap.Error(err))
-	}
-	defer watcher.Close()
-
-	// Watch config file
-	if err := watcher.Add("config/config.yml"); err != nil {
-		proxy.Logger.Fatal("failed to watch config file", zap.Error(err))
-	}
-
-	// Start config change notifier
-	controlPlaneServer.ConfigNotifier(watcher)
-
-	// Register your service implementation
-	pb.RegisterControlPlaneServer(grpcServer, controlPlaneServer)
-
-	proxy.Logger.Info("Control plane listening", zap.String("address", ":50051"))
-
-	// Graceful shutdown
+	// Start gRPC server in background
 	go func() {
-		if err := grpcServer.Serve(lis); err != nil {
-			proxy.Logger.Fatal("failed to serve", zap.Error(err))
+		if err := server.Start(*grpcAddr); err != nil {
+			px.Logger.Fatal("gRPC server failed", zap.Error(err))
 		}
 	}()
 
-	// Wait for interrupt signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	// Watch for config updates
+	go func() {
+		for {
+			select {
+			case cfg, ok := <-configChan:
+				if !ok {
+					px.Logger.Info("Config watcher stopped")
+					return
+				}
+				if cfg != nil {
+					server.UpdateConfig(cfg)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-	proxy.Logger.Info("Shutting down gracefully...")
-	grpcServer.GracefulStop()
-	proxy.Logger.Info("Server stopped")
+	px.Logger.Info("Control plane running. Press Ctrl+C to stop.")
+
+	// Wait for shutdown signal
+	<-ctx.Done()
+	px.Logger.Info("Shutting down control plane...")
+
+	// Graceful shutdown
+	server.Shutdown()
+	px.Logger.Info("Control plane stopped")
 }

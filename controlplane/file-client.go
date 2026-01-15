@@ -1,11 +1,12 @@
-// cmd/controlplane.go
-package main
+package controlplane
 
 import (
 	pb "ananse/controlplane/cmd/configpb"
 	px "ananse/pkg/proxy"
+	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,126 +14,33 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+type FileClient struct {
+	configPath string
+	configName string
+	configType string
+	mu         sync.RWMutex
+}
 
 var (
 	reloadTimer *time.Timer
 )
 
-type Server struct {
-	pb.ControlPlaneServer
-	mu            sync.Mutex
-	currentConfig *pb.Config
-	subscribers   map[string]chan *pb.Config
-	version       uint64
+func NewFileClient(configPath string, configName string, configType string) *FileClient {
+	return &FileClient{configPath: configPath, configName: configName, configType: configType}
 }
-
-func NewServer() (*Server, error) {
-	loadConfig, err := LoadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load initial config: %w", err)
-	}
-
-	s := &Server{
-		currentConfig: &pb.Config{
-			Services:    loadConfig.Services,
-			ProxyConfig: loadConfig.ProxyConfig,
-			LastUpdated: timestamppb.Now(),
-			Version:     "v0",
-		},
-		subscribers: make(map[string]chan *pb.Config),
-	}
-	return s, nil
-}
-
-func (s *Server) Subscribe(req *pb.SubscribeRequest, stream pb.ControlPlane_SubscribeServer) error {
-	//currently LastSeenVersion is ignored, used only for debugging
-	px.Logger.Info("New subscriber",
-		zap.String("proxy_id", req.ProxyId),
-		zap.String("last_seen_version", req.LastSeenVersion))
-
-	//Create a channel for this subscriber
-	configChan := make(chan *pb.Config, 1)
-
-	// Register the subscriber
-	s.mu.Lock()
-	s.subscribers[req.ProxyId] = configChan
-	current := s.currentConfig
-	s.mu.Unlock()
-
-	//Cleanup on disconnect
-	defer func() {
-		s.mu.Lock()
-		delete(s.subscribers, req.ProxyId)
-		close(configChan)
-		s.mu.Unlock()
-
-		px.Logger.Info("Subscriber disconnected", zap.String("proxy_id", req.ProxyId))
-	}()
-
-	// always send latest snapshot once
-	if err := stream.Send(current); err != nil {
-		return err
-	}
-
-	//keep connection open and send updates when they arrive
-	for {
-		select {
-		case cfg := <-configChan:
-			if cfg == nil {
-				return nil
-			}
-			if err := stream.Send(cfg); err != nil {
-				return err
-			}
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-
-		}
-	}
-}
-
-// UpdateConfig pushes new config to all subscribers
-func (s *Server) UpdateConfig(cfg *pb.Config) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.version++
-	cfg.Version = fmt.Sprintf("v%d", s.version)
-	cfg.LastUpdated = timestamppb.Now()
-	s.currentConfig = cfg
-
-	for proxyID, ch := range s.subscribers {
-		select {
-		case ch <- cfg:
-			px.Logger.Info("Sent config update",
-				zap.String("proxy_id", proxyID),
-				zap.String("version", cfg.Version),
-			)
-		default:
-			// latest-only: drop old value and push new snapshot
-			select {
-			case <-ch:
-			default:
-			}
-			ch <- cfg
-			px.Logger.Warn("Subscriber was slow; overwrote pending config",
-				zap.String("proxy_id", proxyID),
-				zap.String("version", cfg.Version),
-			)
-		}
-	}
-}
-
-func LoadConfig() (*pb.Config, error) {
+func (f *FileClient) LoadConfig() (*pb.Config, error) {
 	if px.Logger == nil {
 		px.InitLogger()
 	}
 
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./config/")
+	filepath := f.configPath
+
+	viper.SetConfigName(f.configName)
+	viper.SetConfigType(f.configType)
+	//viper.AddConfigPath("./config/")
+	viper.AddConfigPath(filepath)
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
@@ -157,11 +65,34 @@ func LoadConfig() (*pb.Config, error) {
 	}
 
 	// Validate
-	if err := validateConfig(config); err != nil {
+	if err := f.validate(config); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	return config, nil
+}
+
+func getString(m map[string]interface{}, key string) string {
+	if val, ok := m[key]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+func getStringSlice(m map[string]interface{}, key string) []string {
+	result := []string{}
+	if val, ok := m[key]; ok {
+		if slice, ok := val.([]interface{}); ok {
+			for _, item := range slice {
+				if str, ok := item.(string); ok {
+					result = append(result, str)
+				}
+			}
+		}
+	}
+	return result
 }
 
 func parseServices(raw interface{}) []*pb.Service {
@@ -235,30 +166,7 @@ func parseRoutes(raw interface{}) []*pb.Route {
 	return routes
 }
 
-func getString(m map[string]interface{}, key string) string {
-	if val, ok := m[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
-		}
-	}
-	return ""
-}
-
-func getStringSlice(m map[string]interface{}, key string) []string {
-	result := []string{}
-	if val, ok := m[key]; ok {
-		if slice, ok := val.([]interface{}); ok {
-			for _, item := range slice {
-				if str, ok := item.(string); ok {
-					result = append(result, str)
-				}
-			}
-		}
-	}
-	return result
-}
-
-func validateConfig(config *pb.Config) error {
+func (f *FileClient) validate(config *pb.Config) error {
 	if config.ProxyConfig == nil {
 		return errors.New("proxy_config is required")
 	}
@@ -299,32 +207,83 @@ func validateConfig(config *pb.Config) error {
 	return nil
 }
 
-func (s *Server) ConfigNotifier(watcher *fsnotify.Watcher) {
+func (f *FileClient) Watch(ctx context.Context) <-chan *pb.Config {
+	configChan := make(chan *pb.Config, 1)
+
 	go func() {
+		defer close(configChan)
+
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			px.Logger.Error("failed to create watcher", zap.Error(err))
+			return
+		}
+		defer watcher.Close()
+
+		// Add file to watch
+		configFile := filepath.Join(f.configPath, f.configName+"."+f.configType)
+		if err := watcher.Add(configFile); err != nil {
+			px.Logger.Error("failed to watch config file",
+				zap.String("file", configFile),
+				zap.Error(err))
+			return
+		}
+
+		// Send initial config
+		cfg, err := f.LoadConfig()
+		if err != nil {
+			px.Logger.Error("failed to load initial config", zap.Error(err))
+			return
+		}
+
+		select {
+		case configChan <- cfg:
+			px.Logger.Info("Initial config loaded", zap.String("version", cfg.Version))
+		case <-ctx.Done():
+			return
+		}
+
+		// Watch for changes
+		var reloadTimer *time.Timer
 		for {
 			select {
+			case <-ctx.Done():
+				px.Logger.Info("File watcher stopped")
+				if reloadTimer != nil {
+					reloadTimer.Stop()
+				}
+				return
+
 			case event, ok := <-watcher.Events:
 				if !ok {
 					return
 				}
+
 				if event.Has(fsnotify.Write) {
-					s.mu.Lock()
+					f.mu.Lock()
 					if reloadTimer != nil {
 						reloadTimer.Stop()
 					}
+
 					reloadTimer = time.AfterFunc(500*time.Millisecond, func() {
-						px.Logger.Info("Config changed, reloading",
-							zap.String("file", event.Name),
-							zap.String("current_version", s.currentConfig.Version))
-						cfg, err := LoadConfig()
+						cfg, err := f.LoadConfig()
 						if err != nil {
-							px.Logger.Error("Reload failed", zap.Error(err))
+							px.Logger.Error("Config reload failed", zap.Error(err))
 							return
 						}
-						s.UpdateConfig(cfg)
+
+						px.Logger.Info("Config reloaded",
+							zap.String("file", event.Name),
+							zap.String("version", cfg.Version))
+
+						select {
+						case configChan <- cfg:
+						case <-ctx.Done():
+						}
 					})
-					s.mu.Unlock()
+					f.mu.Unlock()
 				}
+
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
@@ -333,4 +292,6 @@ func (s *Server) ConfigNotifier(watcher *fsnotify.Watcher) {
 			}
 		}
 	}()
+
+	return configChan
 }
