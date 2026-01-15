@@ -25,6 +25,7 @@ spec:
       - name: controlplane
         image: controlplane:latest
         imagePullPolicy: IfNotPresent
+        args: ["--k8s"]
         ports:
         - containerPort: 50051
         volumeMounts:

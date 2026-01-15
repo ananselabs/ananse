@@ -45,7 +45,7 @@ func (s *Server) Subscribe(req *pb.SubscribeRequest, stream pb.ControlPlane_Subs
 		zap.String("last_seen_version", req.LastSeenVersion))
 
 	//Create a channel for this subscriber
-	configChan := make(chan *pb.Config, 1)
+	configChan := make(chan *pb.Config, 10)
 
 	// Register the subscriber
 	s.mu.Lock()

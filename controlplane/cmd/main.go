@@ -37,7 +37,7 @@ func main() {
 	var watcher cp.ConfigWatcher
 	if *useK8s {
 		px.Logger.Info("Starting with Kubernetes service discovery")
-		k8sClient, err := cp.NewK8sClient()
+		k8sClient, err := cp.NewK8sClient("ananse")
 		if err != nil {
 			px.Logger.Fatal("Failed to create K8s client", zap.Error(err))
 		}
