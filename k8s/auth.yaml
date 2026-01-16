@@ -49,6 +49,8 @@ kind: Service
 metadata:
   name: auth
   namespace: ananse
+  labels:
+    ananse.io/mesh: "enabled"
 spec:
   selector:
     app: auth

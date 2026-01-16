@@ -49,6 +49,8 @@ kind: Service
 metadata:
   name: echo
   namespace: ananse
+  labels:
+    ananse.io/mesh: "enabled"
 spec:
   selector:
     app: echo

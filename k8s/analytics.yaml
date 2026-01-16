@@ -49,6 +49,8 @@ kind: Service
 metadata:
   name: analytics
   namespace: ananse
+  labels:
+    ananse.io/mesh: "enabled"
 spec:
   selector:
     app: analytics

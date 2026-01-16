@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -20,15 +19,22 @@ import (
 	"k8s.io/client-go/util/homedir"
 )
 
-const resyncPeriod = 10 * time.Minute
+const (
+	resyncPeriod   = 10 * time.Minute
+	debounceWindow = 500 * time.Millisecond
+	defaultPort    = int32(8080)
+)
 
 type K8sClient struct {
-	clientset  kubernetes.Interface
-	factory    informers.SharedInformerFactory
-	namespace  string
+	clientset kubernetes.Interface
+	factory   informers.SharedInformerFactory
+	namespace string
+
+	serviceInformer cache.SharedIndexInformer
+	sliceInformer   cache.SharedIndexInformer
+
 	configChan chan *pb.Config
 	updateChan chan struct{}
-	mu         sync.Mutex
 }
 
 func NewK8sClient(namespace string) (*K8sClient, error) {
@@ -36,242 +42,193 @@ func NewK8sClient(namespace string) (*K8sClient, error) {
 		px.InitLogger()
 	}
 
-	var config *rest.Config
-	var err error
-
-	// Try in-cluster config first (when running inside a pod)
-	config, err = rest.InClusterConfig()
+	cfg, err := loadKubeConfig()
 	if err != nil {
-		// Fall back to kubeconfig (for local development)
-		kubeconfig := filepath.Join(homedir.HomeDir(), ".kube", "config")
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
-		}
+		return nil, err
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create clientset: %w", err)
+		return nil, fmt.Errorf("create clientset: %w", err)
 	}
 
-	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		resyncPeriod,
+		informers.WithNamespace(namespace),
+	)
 
 	return &K8sClient{
-		clientset:  clientset,
-		factory:    factory,
-		namespace:  namespace,
-		configChan: make(chan *pb.Config, 10),
-		updateChan: make(chan struct{}, 10),
+		clientset:       clientset,
+		factory:         factory,
+		namespace:       namespace,
+		serviceInformer: factory.Core().V1().Services().Informer(),
+		sliceInformer:   factory.Discovery().V1().EndpointSlices().Informer(),
+		configChan:      make(chan *pb.Config, 5),
+		updateChan:      make(chan struct{}, 1),
 	}, nil
 }
 
+func loadKubeConfig() (*rest.Config, error) {
+	cfg, err := rest.InClusterConfig()
+	if err == nil {
+		return cfg, nil
+	}
+
+	kubeconfig := filepath.Join(homedir.HomeDir(), ".kube", "config")
+	cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("load kubeconfig: %w", err)
+	}
+	return cfg, nil
+}
+
 func (k *K8sClient) Watch(ctx context.Context) <-chan *pb.Config {
-	go func() {
-		defer close(k.configChan)
+	handler := cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(any) { k.signalUpdate() },
+		UpdateFunc: func(_, _ any) { k.signalUpdate() },
+		DeleteFunc: func(any) { k.signalUpdate() },
+	}
 
-		// Get informers
-		serviceInformer := k.factory.Core().V1().Services().Informer()
-		sliceInformer := k.factory.Discovery().V1().EndpointSlices().Informer()
+	k.serviceInformer.AddEventHandler(handler)
+	k.sliceInformer.AddEventHandler(handler)
 
-		// Add event handlers AFTER we start factory
-		stopCh := make(chan struct{})
-		defer close(stopCh)
+	k.factory.Start(ctx.Done())
 
-		// Start factory FIRST
-		k.factory.Start(stopCh)
-		go k.debouncer(ctx)
-		// Wait for cache sync BEFORE adding handlers
-		if !cache.WaitForCacheSync(stopCh, serviceInformer.HasSynced, sliceInformer.HasSynced) {
-			px.Logger.Error("Failed to sync K8s cache")
-			return
-		}
+	if !cache.WaitForCacheSync(
+		ctx.Done(),
+		k.serviceInformer.HasSynced,
+		k.sliceInformer.HasSynced,
+	) {
+		px.Logger.Fatal("Failed to sync K8s caches")
+	}
 
-		px.Logger.Info("K8s cache synced, watching for changes")
+	px.Logger.Info("K8s cache synced")
 
-		// NOW add handlers (avoids initial flood)
-		serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				k.onConfigChange("Service added")
-			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				k.onConfigChange("Service updated")
-			},
-			DeleteFunc: func(obj interface{}) {
-				k.onConfigChange("Service deleted")
-			},
-		})
+	go k.runDebouncer(ctx)
 
-		sliceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				k.onConfigChange("EndpointSlice added")
-			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				k.onConfigChange("EndpointSlice updated")
-			},
-			DeleteFunc: func(obj interface{}) {
-				k.onConfigChange("EndpointSlice deleted")
-			},
-		})
-
-		// Build and send initial config
-		cfg := k.buildConfigFromK8s()
-		select {
-		case k.configChan <- cfg:
-			px.Logger.Info("Initial K8s config loaded",
-				zap.String("version", cfg.Version),
-				zap.Int("services", len(cfg.Services)))
-		case <-ctx.Done():
-			return
-		}
-
-		// Watch for changes
-		<-ctx.Done()
-		px.Logger.Info("K8s watcher stopped")
-	}()
+	// Emit initial config
+	if cfg := k.buildConfig(); k.validate(cfg) == nil {
+		k.configChan <- cfg
+	}
 
 	return k.configChan
 }
 
-func (k *K8sClient) onConfigChange(reason string) {
-	//cfg := k.buildConfigFromK8s()
+func (k *K8sClient) signalUpdate() {
 	select {
 	case k.updateChan <- struct{}{}:
-		px.Logger.Info("Config updated", zap.String("reason", reason))
 	default:
-		// Channel full, drop update (last config still valid)
-		px.Logger.Warn("Config update dropped (channel full)", zap.String("reason", reason))
 	}
 }
 
-func (k *K8sClient) buildConfigFromK8s() *pb.Config {
-	config := &pb.Config{
+func (k *K8sClient) runDebouncer(ctx context.Context) {
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+
+	for {
+		select {
+		case <-k.updateChan:
+			timer.Reset(debounceWindow)
+
+		case <-timer.C:
+			cfg := k.buildConfig()
+			if err := k.validate(cfg); err != nil {
+				px.Logger.Warn("Invalid config", zap.Error(err))
+				continue
+			}
+			select {
+			case k.configChan <- cfg:
+				px.Logger.Info("Config updated",
+					zap.Int("services", len(cfg.Services)))
+			default:
+				px.Logger.Warn("Config channel full")
+			}
+
+		case <-ctx.Done():
+			close(k.configChan)
+			return
+		}
+	}
+}
+
+func (k *K8sClient) buildConfig() *pb.Config {
+	cfg := &pb.Config{
 		Version: fmt.Sprintf("k8s-%d", time.Now().Unix()),
 		ProxyConfig: &pb.ProxyConfig{
 			Port:                       8089,
 			MetricsPort:                9090,
 			HealthCheckIntervalSeconds: 10,
 		},
-		Services: []*pb.Service{},
 	}
 
-	// Get services from informer
-	serviceInformer := k.factory.Core().V1().Services().Informer()
-	services := serviceInformer.GetStore().List()
-
-	for _, obj := range services {
-		svc := obj.(*corev1.Service)
-
-		// Skip kube-system, kube-public, etc
-		if svc.Namespace != k.namespace && k.namespace != "" {
+	for _, obj := range k.serviceInformer.GetStore().List() {
+		svc, ok := obj.(*corev1.Service)
+		if !ok || len(svc.Spec.Selector) == 0 {
 			continue
 		}
 
-		// Skip services without selector
-		if len(svc.Spec.Selector) == 0 {
-			continue
-		}
+		//if svc.Labels["ananse/enabled"] != "true" {
+		//	continue
+		//}
 
-		// Build endpoints
-		endpoints := k.getEndpointsForService(svc.Namespace, svc.Name)
-
+		endpoints := k.buildEndpoints(svc.Namespace, svc.Name)
 		if len(endpoints) == 0 {
 			continue
 		}
 
-		service := &pb.Service{
+		cfg.Services = append(cfg.Services, &pb.Service{
 			Name:      svc.Name,
 			Endpoints: endpoints,
 			Routes: []*pb.Route{
 				{
-					Path:    fmt.Sprintf("/%s", svc.Name),
+					Path:    "/" + svc.Name,
 					Methods: []string{"GET", "POST", "PUT", "DELETE", "PATCH"},
 				},
 			},
-		}
-
-		config.Services = append(config.Services, service)
+		})
 	}
 
-	px.Logger.Info("Built config from K8s",
-		zap.Int("services", len(config.Services)),
-		zap.Int("total_store_items", len(services)))
-
-	return config
+	return cfg
 }
 
-func (k *K8sClient) getEndpointsForService(namespace, serviceName string) []*pb.Endpoint {
-	var endpoints []*pb.Endpoint
+func (k *K8sClient) buildEndpoints(ns, svcName string) []*pb.Endpoint {
+	var out []*pb.Endpoint
 
-	sliceInformer := k.factory.Discovery().V1().EndpointSlices().Informer()
-	slices := sliceInformer.GetStore().List()
-
-	for _, obj := range slices {
-		slice := obj.(*discoveryv1.EndpointSlice)
-
-		// Check if this EndpointSlice belongs to the service
-		svcName, ok := slice.Labels["kubernetes.io/service-name"]
-		if !ok || svcName != serviceName {
+	for _, obj := range k.sliceInformer.GetStore().List() {
+		slice, ok := obj.(*discoveryv1.EndpointSlice)
+		if !ok ||
+			slice.Namespace != ns ||
+			slice.Labels["kubernetes.io/service-name"] != svcName {
 			continue
 		}
 
-		if slice.Namespace != namespace {
-			continue
-		}
-
-		// Get port
-		var port int32 = 8080 // Default
+		port := defaultPort
 		if len(slice.Ports) > 0 && slice.Ports[0].Port != nil {
 			port = *slice.Ports[0].Port
 		}
 
-		// Extract ready endpoints
-		for _, endpoint := range slice.Endpoints {
-			if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
+		for _, ep := range slice.Endpoints {
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
 				continue
 			}
-
-			for _, addr := range endpoint.Addresses {
-				endpoints = append(endpoints, &pb.Endpoint{
+			for _, addr := range ep.Addresses {
+				out = append(out, &pb.Endpoint{
 					Address: fmt.Sprintf("%s:%d", addr, port),
 				})
 			}
 		}
 	}
 
-	return endpoints
+	return out
 }
 
-func (k *K8sClient) validate(config *pb.Config) error {
-	if config.ProxyConfig == nil {
+func (k *K8sClient) validate(cfg *pb.Config) error {
+	if cfg.ProxyConfig == nil {
 		return fmt.Errorf("proxy_config is required")
 	}
-	if len(config.Services) == 0 {
+	if len(cfg.Services) == 0 {
 		return fmt.Errorf("at least one service is required")
 	}
 	return nil
-}
-
-func (k *K8sClient) debouncer(ctx context.Context) {
-	ticker := time.NewTimer(500 * time.Millisecond) // Wait 500ms for updates to settle
-	ticker.Stop()
-
-	for {
-		select {
-		case <-k.updateChan:
-			// Reset timer - wait for updates to stop
-			ticker.Reset(500 * time.Millisecond)
-		case <-ticker.C:
-			// 500ms passed without new updates - build and send config
-			cfg := k.buildConfigFromK8s()
-			select {
-			case k.configChan <- cfg:
-				px.Logger.Info("Debounced config update", zap.Int("services", len(cfg.Services)))
-			default:
-				px.Logger.Warn("Config channel full, dropping update")
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
 }
