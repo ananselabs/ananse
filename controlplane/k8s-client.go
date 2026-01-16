@@ -14,6 +14,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
@@ -35,15 +36,18 @@ func NewK8sClient(namespace string) (*K8sClient, error) {
 		px.InitLogger()
 	}
 
-	// Load kubeconfig
-	var kubeconfig string
-	if home := homedir.HomeDir(); home != "" {
-		kubeconfig = filepath.Join(home, ".kube", "config")
-	}
+	var config *rest.Config
+	var err error
 
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	// Try in-cluster config first (when running inside a pod)
+	config, err = rest.InClusterConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
+		// Fall back to kubeconfig (for local development)
+		kubeconfig := filepath.Join(homedir.HomeDir(), ".kube", "config")
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
+		}
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -144,7 +148,7 @@ func (k *K8sClient) buildConfigFromK8s() *pb.Config {
 	config := &pb.Config{
 		Version: fmt.Sprintf("k8s-%d", time.Now().Unix()),
 		ProxyConfig: &pb.ProxyConfig{
-			Port:                       8080,
+			Port:                       8089,
 			MetricsPort:                9090,
 			HealthCheckIntervalSeconds: 10,
 		},

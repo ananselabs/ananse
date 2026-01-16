@@ -15,6 +15,7 @@ spec:
       labels:
         app: proxy-gateway
     spec:
+      serviceAccountName: ananse-controlplane
       containers:
       - name: proxy
         image: proxy:latest

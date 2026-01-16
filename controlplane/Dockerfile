@@ -13,4 +13,4 @@ FROM alpine:latest
 WORKDIR /root/
 COPY --from=builder /server .
 COPY --from=builder /app/config ./config
-CMD ["./server"]
+ENTRYPOINT ["./server"]
