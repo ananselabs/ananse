@@ -167,6 +167,9 @@ func parseRoutes(raw interface{}) []*pb.Route {
 }
 
 func (f *FileClient) validate(config *pb.Config) error {
+	if config == nil {
+		return errors.New("config file is required")
+	}
 	if config.ProxyConfig == nil {
 		return errors.New("proxy_config is required")
 	}
