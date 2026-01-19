@@ -14,6 +14,7 @@ spec:
     metadata:
       labels:
         app: auth
+        app.kubernetes.io/part-of: ananse-mesh
     spec:
       containers:
       - name: auth
