@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"go.uber.org/zap"
 )
 
@@ -41,7 +43,7 @@ func Director() func(r *http.Request) {
 		request.URL.Host = target.Host
 		request.Host = target.Host
 		request.URL.Path = singleJoiningSlash(target.Path, request.URL.Path)
-
+		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
 		//add custom headers
 		host, _, err := net.SplitHostPort(request.RemoteAddr)
 		if err != nil {

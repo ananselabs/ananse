@@ -21,7 +21,8 @@ func main() {
 		px.InitLogger()
 	}
 	defer px.Logger.Sync()
-
+	cleanup := px.InitTracer()
+	defer cleanup(context.Background())
 	// Create channel to signal when first config is received
 	firstConfigReady := make(chan struct{})
 	var firstConfigOnce sync.Once
