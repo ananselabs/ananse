@@ -47,7 +47,9 @@ func InitTracer() func(context.Context) error {
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSampler(sdktrace.ParentBased(
+			sdktrace.TraceIDRatioBased(0.1), // 10% of NEW traces
+		)),
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(resources),
 	)
