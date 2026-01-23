@@ -146,6 +146,15 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp, err := h.proxy.Transport.RoundTrip(outReq)
 
 		if err != nil {
+			traceID := span.SpanContext().TraceID().String()
+			Logger.Error("backend_request_failed",
+				zap.String("trace_id", traceID),
+				zap.String("backend", backend.Name),
+				zap.String("service", serviceName),
+				zap.Error(err),
+				zap.Int("attempt", attempt),
+			)
+
 			forwardSpan.RecordError(err)
 			forwardSpan.SetStatus(codes.Error, err.Error())
 			forwardSpan.End()

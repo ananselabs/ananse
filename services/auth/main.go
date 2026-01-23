@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ananse/pkg/proxy"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -20,39 +26,9 @@ var (
 )
 
 func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		// 1. Simulation: Latency
-		sleep := r.URL.Query().Get("sleep")
-		if sleep != "" {
-			if sleepMs, err := strconv.Atoi(sleep); err == nil {
-				fmt.Printf("Sleeping for %dms\n", sleepMs)
-				time.Sleep(time.Duration(sleepMs) * time.Millisecond)
-			}
-		}
-
-		// 2. Simulation: Forced Status Code
-		if codeStr := r.URL.Query().Get("code"); codeStr != "" {
-			if code, err := strconv.Atoi(codeStr); err == nil {
-				w.WriteHeader(code)
-				// If it's an error code, we might want to stop here or return an error body
-				if code >= 400 {
-					json.NewEncoder(w).Encode(map[string]string{
-						"error": fmt.Sprintf("Forced error: %d", code),
-					})
-					return
-				}
-			}
-		}
-
-		// 3. Response: Echo Headers for verification
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"service":          "auth",
-			"status":           "authenticated",
-			"received_headers": r.Header,
-		})
-	})
+	shutdown := proxy.InitTracer()
+	defer shutdown(context.Background())
+	http.HandleFunc("/", handleAuth)
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		mu.RLock()
@@ -108,4 +84,52 @@ func main() {
 	}
 
 	log.Println("Server exiting")
+}
+
+func handleAuth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	ctx := otel.GetTextMapPropagator().Extract(
+		r.Context(),
+		propagation.HeaderCarrier(r.Header),
+	)
+	ctx, span := otel.Tracer("auth").Start(ctx, "auth.handle_request",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.url", r.URL.Path),
+			attribute.String("http.host", r.Host),
+		),
+	)
+	defer span.End()
+
+	// 1. Simulation: Latency
+	sleep := r.URL.Query().Get("sleep")
+	if sleep != "" {
+		if sleepMs, err := strconv.Atoi(sleep); err == nil {
+			fmt.Printf("Sleeping for %dms\n", sleepMs)
+			time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+		}
+	}
+
+	// 2. Simulation: Forced Status Code
+	if codeStr := r.URL.Query().Get("code"); codeStr != "" {
+		if code, err := strconv.Atoi(codeStr); err == nil {
+			w.WriteHeader(code)
+			// If it's an error code, we might want to stop here or return an error body
+			if code >= 400 {
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": fmt.Sprintf("Forced error: %d", code),
+				})
+				return
+			}
+		}
+	}
+
+	// 3. Response: Echo Headers for verification
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"service":          "auth",
+		"status":           "authenticated",
+		"received_headers": r.Header,
+	})
 }

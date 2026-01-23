@@ -12,6 +12,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ananse/pkg/proxy"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -19,38 +26,55 @@ var (
 	mu        sync.RWMutex
 )
 
-func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+func handlePayments(w http.ResponseWriter, r *http.Request) {
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
-		// 1. Simulation: Latency
-		sleep := r.URL.Query().Get("sleep")
-		if sleep != "" {
-			if sleepMs, err := strconv.Atoi(sleep); err == nil {
-				fmt.Printf("Sleeping for %dms\n", sleepMs)
-				time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+	_, span := otel.Tracer("payments").Start(ctx, "payments.handle_request",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.url", r.URL.Path),
+			attribute.String("http.host", r.Host),
+		),
+	)
+	defer span.End()
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// 1. Simulation: Latency
+	sleep := r.URL.Query().Get("sleep")
+	if sleep != "" {
+		if sleepMs, err := strconv.Atoi(sleep); err == nil {
+			fmt.Printf("Sleeping for %dms\n", sleepMs)
+			time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+		}
+	}
+
+	// 2. Simulation: Forced Status Code
+	if codeStr := r.URL.Query().Get("code"); codeStr != "" {
+		if code, err := strconv.Atoi(codeStr); err == nil {
+			w.WriteHeader(code)
+			if code >= 400 {
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": fmt.Sprintf("Forced error: %d", code),
+				})
+				return
 			}
 		}
+	}
 
-		// 2. Simulation: Forced Status Code
-		if codeStr := r.URL.Query().Get("code"); codeStr != "" {
-			if code, err := strconv.Atoi(codeStr); err == nil {
-				w.WriteHeader(code)
-				if code >= 400 {
-					json.NewEncoder(w).Encode(map[string]string{
-						"error": fmt.Sprintf("Forced error: %d", code),
-					})
-					return
-				}
-			}
-		}
-
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"service":          "payments",
-			"balance":          1000,
-			"received_headers": r.Header,
-		})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"service":          "payments",
+		"balance":          1000,
+		"received_headers": r.Header,
 	})
+}
+
+func main() {
+	shutdown := proxy.InitTracer()
+	defer shutdown(context.Background())
+
+	http.HandleFunc("/", handlePayments)
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		mu.RLock()

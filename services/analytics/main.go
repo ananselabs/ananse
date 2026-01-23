@@ -1,9 +1,15 @@
 package main
 
 import (
+	"ananse/pkg/proxy"
 	"context"
 	"encoding/json"
 	"fmt"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"log"
 	"net/http"
 	"os"
@@ -20,38 +26,10 @@ var (
 )
 
 func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+	shutdown := proxy.InitTracer()
+	defer shutdown(context.Background())
 
-		// 1. Simulation: Latency
-		sleep := r.URL.Query().Get("sleep")
-		if sleep != "" {
-			if sleepMs, err := strconv.Atoi(sleep); err == nil {
-				fmt.Printf("Sleeping for %dms\n", sleepMs)
-				time.Sleep(time.Duration(sleepMs) * time.Millisecond)
-			}
-		}
-
-		// 2. Simulation: Forced Status Code
-		if codeStr := r.URL.Query().Get("code"); codeStr != "" {
-			if code, err := strconv.Atoi(codeStr); err == nil {
-				w.WriteHeader(code)
-				if code >= 400 {
-					json.NewEncoder(w).Encode(map[string]string{
-						"error": fmt.Sprintf("Forced error: %d", code),
-					})
-					return
-				}
-			}
-		}
-
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"service":          "analytics",
-			"events":           []string{},
-			"received_headers": r.Header,
-		})
-	})
-
+	http.HandleFunc("/", handleAnalytics)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		mu.RLock()
 		defer mu.RUnlock()
@@ -106,4 +84,49 @@ func main() {
 	}
 
 	log.Println("Server exiting")
+}
+
+func handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	ctx := otel.GetTextMapPropagator().Extract(
+		r.Context(),
+		propagation.HeaderCarrier(r.Header),
+	)
+	ctx, span := otel.Tracer("analytics").Start(ctx, "analytics.handle_request",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.url", r.URL.Path),
+			attribute.String("http.host", r.Host),
+		),
+	)
+	defer span.End()
+
+	// 1. Simulation: Latency
+	sleep := r.URL.Query().Get("sleep")
+	if sleep != "" {
+		if sleepMs, err := strconv.Atoi(sleep); err == nil {
+			fmt.Printf("Sleeping for %dms\n", sleepMs)
+			time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+		}
+	}
+
+	// 2. Simulation: Forced Status Code
+	if codeStr := r.URL.Query().Get("code"); codeStr != "" {
+		if code, err := strconv.Atoi(codeStr); err == nil {
+			w.WriteHeader(code)
+			if code >= 400 {
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": fmt.Sprintf("Forced error: %d", code),
+				})
+				return
+			}
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"service":          "analytics",
+		"events":           []string{},
+		"received_headers": r.Header,
+	})
 }
