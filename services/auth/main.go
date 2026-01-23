@@ -26,6 +26,11 @@ var (
 )
 
 func main() {
+	if proxy.Logger == nil {
+		proxy.InitLogger()
+	}
+	defer proxy.Logger.Sync()
+
 	shutdown := proxy.InitTracer()
 	defer shutdown(context.Background())
 	http.HandleFunc("/", handleAuth)

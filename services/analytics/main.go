@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -26,6 +27,11 @@ var (
 )
 
 func main() {
+	if proxy.Logger == nil {
+		proxy.InitLogger()
+	}
+	defer proxy.Logger.Sync()
+
 	shutdown := proxy.InitTracer()
 	defer shutdown(context.Background())
 

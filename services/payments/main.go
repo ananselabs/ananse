@@ -71,6 +71,11 @@ func handlePayments(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	if proxy.Logger == nil {
+		proxy.InitLogger()
+	}
+	defer proxy.Logger.Sync()
+
 	shutdown := proxy.InitTracer()
 	defer shutdown(context.Background())
 
