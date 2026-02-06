@@ -141,7 +141,7 @@ func doMalformed() error {
 	}
 
 	msg := garbage[rand.Intn(len(garbage))]
-	fmt.Fprintf(conn, msg)
+	fmt.Fprint(conn, msg)
 
 	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	reader := bufio.NewReader(conn)
