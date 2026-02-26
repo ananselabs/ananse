@@ -1,0 +1,13 @@
+FROM alpine:3.18
+
+# Install iptables
+RUN apk add --no-cache iptables
+
+# Copy the init script
+COPY scripts/iptables-init.sh /usr/local/bin/iptables-init.sh
+RUN chmod +x /usr/local/bin/iptables-init.sh
+
+# Run as root (required for iptables)
+USER root
+
+ENTRYPOINT ["/usr/local/bin/iptables-init.sh"]

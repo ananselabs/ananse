@@ -1,0 +1,29 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: ananse-webhook
+  namespace: ananse-system
+webhooks:
+  - name: sidecar-injector.ananse.io
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+    clientConfig:
+      service:
+        name: ananse-webhook
+        namespace: "ananse-system"
+        path: "/mutate"
+        port: 443
+      caBundle: |
+        LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUNwRENDQVl3Q0NRQ1N3NDV1T0JaeEhqQU5CZ2txaGtpRzl3MEJBUXNGQURBVU1SSXdFQVlEVlFRRERBbGgKYm1GdWMyVXRZMkV3SGhjTk1qWXdNakV3TWpNek56VXpXaGNOTWpjd01qRXdNak16TnpVeldqQVVNUkl3RUFZRApWUVFEREFsaGJtRnVjMlV0WTJFd2dnRWlNQTBHQ1NxR1NJYjNEUUVCQVFVQUE0SUJEd0F3Z2dFS0FvSUJBUUMzCi9NSTBPSTN6dXpKTjd2YTR0YWFLUmxwWGt0Q0JUaE1lOGZlcjRWdlB2cDdpK2tCUkhLWmRNS2hGdGFiZ3FuYTAKREpwRmYvVTJ0eEIvT2dkUGxrRFlJV1JuR3JkRzZXMzkwVG1MeWpxamw4QUdhZjZSV0pJc0QvWllEWkY3Q2kwZgpKV1NCRnJKaWIwNE9PV0NDblY2cml5LzRKNkhtQzFrK252Z2xGVEFONEM3bGNZM2VHRTdHMHVmSFJ3VUZsNlJZCjViRGI0anRMTDhlUUY0RGxJS29zZk0xMkpXUXUxeHlhcDB1N3FHOVkzdTlrckQ3OTRHd0lEbkI3YzZQSW1LVTUKd0ptbi9FcDZodjNwRVBVVmw3YmR3emV1NmRUKzR1YndoYmQvbFBja2VLL3FlRElHZXphYnNxeWRGU0Zva3Y1UQp2OFgrc2wyVzJMRCt0TVh2YjFSekFnTUJBQUV3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUNWam12SkRod3lUCjZDcFdSVjQxKyt2V09KRk9jb2dHR1lEN1l0NWtpRjlrcm9OS1JxYnArdkkwVnhFbXd5ZCttbEphL2ZzSUU5K3cKQnVwZ2Y1eDBsbEJZWkpmbnJmR3p6V0RobmlUTklVa29sb1pMeFpGTUxsNk1nYUlvVnZYZHRpSDU2bEtsd0FCTwpSZmlzRnpGYzFla3N4dDliN2RHeTFqZGtFOFdFaEI1RWJ5em90ZjJOUUMvZDFueERQVysxV001MmZ0ZVBkS1NWCjdmMDBWb29vcCtPR2pwQkNIQmdDS3hEMEk1S0hDcnREV0ZndldneVVNNTU5cVdzT1lyclltblViVkdjTi91OVEKaGlsRkNGYWFnOFhtSVZrWWtvcW5aMCtzTjNNd215L2pJMmNyeUxoZ1VIcDVKNWE2ZGFpRnJ0K29UdWRpbytQVQpUTjN0Y2JoWVJqTT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 5
+    failurePolicy: Fail
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "ananse-system"]

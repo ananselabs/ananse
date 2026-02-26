@@ -1,0 +1,31 @@
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the controlplane
+RUN CGO_ENABLED=0 GOOS=linux go build -o ananse-controlplane ./controlplane/cmd/
+
+# Runtime image
+FROM alpine:3.18
+
+WORKDIR /
+
+# Copy binary from builder
+COPY --from=builder /app/ananse-controlplane /ananse-controlplane
+
+# Use existing nobody user (UID 65534 already exists in Alpine)
+USER nobody
+
+# Expose ports
+EXPOSE 8443 50051 9090
+
+ENTRYPOINT ["/ananse-controlplane"]

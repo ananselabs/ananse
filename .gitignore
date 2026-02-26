@@ -159,3 +159,5 @@ fabric.properties
 *.xml
 *.iml
 *.idea
+
+deploy/secret.yaml

@@ -1,7 +1,7 @@
 <div align="center">
   <img src="ananse.png" alt="Ananse Mascot" width="200"/>
   <h1>Ananse</h1>
-  <p><strong>A Resilient Service Mesh & Observability Plane in Go</strong></p>
+  <p><strong>A Service Mesh in Go</strong></p>
   <p><em>Learning distributed systems through building production-grade infrastructure</em></p>
 
   ![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)
@@ -11,181 +11,275 @@
 
 ---
 
-## <img src="ananse.svg" width="30"/> What is Ananse?
+## What is Ananse?
 
-**Ananse** is a production-ready service mesh data plane built in Go, named after the Akan folktale spider known for wisdom and cleverness. What began as a simple load balancer has evolved into a robust traffic management system featuring circuit breakers, intelligent retries, and comprehensive observability.
+**Ananse** is a service mesh built in Go, named after the Akan folktale spider known for wisdom and cleverness. It provides transparent traffic interception, load balancing, and observability for microservices.
 
-- **Current State:** Fully functional reverse proxy with advanced resilience patterns
-- **Vision:** A complete service mesh with dynamic control plane, policy management, and distributed tracing
+### Two Operating Modes
 
-### Why Ananse?
+| Mode | Purpose | Use Case |
+|------|---------|----------|
+| **Sidecar** | Transparent proxy using iptables | Injected into pods/containers, intercepts all traffic |
+| **Gateway** | Reverse proxy with routing | Edge proxy, API gateway, explicit proxying |
 
-This project is both a learning journey and a practical implementation of distributed systems patterns. Each feature is battle-tested through chaos engineering and high-concurrency stress tests, making it a valuable reference for understanding how production systems handle failure at scale.
+---
 
-## ✨ Key Features
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Control Plane                          │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │   gRPC      │  │  Webhook    │  │  Config Watcher     │  │
+│  │   Server    │  │  (K8s)      │  │  (File/K8s)         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ gRPC Stream
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                       Data Plane                            │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │                    Sidecar Proxy                    │    │
+│  │  ┌───────────┐              ┌───────────┐          │    │
+│  │  │  Inbound  │              │  Outbound │          │    │
+│  │  │  :15006   │              │  :15001   │          │    │
+│  │  └───────────┘              └───────────┘          │    │
+│  │        ▲                          │                │    │
+│  │        │ iptables REDIRECT        │ SO_ORIGINAL_DST│    │
+│  │        │                          ▼                │    │
+│  │  [External Traffic]        [Original Destination]  │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Features
 
 ### Traffic Management
-- **Load Balancing Strategies**: Round-Robin and Least-Connections algorithms
-- **Circuit Breaker Pattern**: Automatic failure detection with Open/HalfOpen/Closed state machine
-- **Intelligent Retries**: Passive health checks with exponential backoff
-- **Active Health Monitoring**: Continuous backend health checks with automatic recovery
+- **Transparent Proxying**: iptables-based traffic interception (sidecar mode)
+- **Load Balancing**: Round-robin and least-connections algorithms
+- **Circuit Breaker**: Automatic failure detection with Open/HalfOpen/Closed states
+- **Health Checking**: Active and passive health monitoring with exponential backoff
 
-### Resilience & Testing
-- **Thread-Safe Backend Pool**: Atomic operations and RWMutex for safe concurrent access
-- **Chaos Engineering**: Built-in chaos monkey for service disruption simulation
-- **High-Velocity Load Testing**: Stress test scripts supporting 2000+ concurrent requests
-- **Graceful Degradation**: Fail-fast behavior preventing cascading failures
+### Kubernetes Integration
+- **Automatic Sidecar Injection**: MutatingWebhook injects proxy into annotated pods
+- **Namespace Exclusions**: Skips system namespaces to prevent deadlocks
+- **Security Hardened**: Non-root containers, dropped capabilities, read-only filesystem
 
 ### Observability
-- **Prometheus Integration**: Scraped metrics for request counts, latencies, and circuit breaker states
-- **Grafana Dashboards**: Pre-configured visualizations for system health
-- **Alerting**: Threshold-based alerts for error rates and service availability
+- **Prometheus Metrics**: Request counts, latencies, circuit breaker states
+- **Distributed Tracing**: OpenTelemetry integration with Tempo/Jaeger
+- **Structured Logging**: JSON logs with trace correlation
 
 ---
 
-## 🚀 Getting Started
+## Quick Start
 
-### Prerequisites
+### Option 1: Kubernetes Deployment
 
-- **Go** (1.23+)
-- **Docker** & **Docker Compose** (for monitoring stack)
-
-### 1. Start the Infrastructure
-
-First, spin up the monitoring stack (Prometheus & Grafana):
+**Prerequisites:** kubectl, kind/minikube, Docker
 
 ```bash
-docker-compose up -d
+# Build and push images
+docker build -f docker/Dockerfile.controlplane -t anthony4m/ananse-controlplane:v1 .
+docker build -f docker/Dockerfile.proxy -t anthony4m/ananse-proxy:v1 .
+docker build -f docker/Dockerfile.init -t anthony4m/ananse-init:v1 .
+
+docker push anthony4m/ananse-controlplane:v1
+docker push anthony4m/ananse-proxy:v1
+docker push anthony4m/ananse-init:v1
+
+# Generate TLS certificates
+./scripts/generate-certs.sh
+
+# Deploy to cluster
+kubectl apply -f deploy/namespace.yaml
+kubectl apply -f deploy/injector-config.yaml
+kubectl apply -f deploy/rbac.yaml
+kubectl apply -f deploy/webhook-deployment.yaml
+kubectl apply -f deploy/webhook-service.yaml
+kubectl apply -f deploy/webhook-config.yaml
+
+# Test injection - deploy a pod with the annotation
+kubectl run test-app --image=nginx \
+  --annotations="sidecar.ananse.io/inject=true"
+
+# Verify sidecar was injected
+kubectl get pod test-app -o jsonpath='{.spec.containers[*].name}'
+# Should show: nginx ananse-proxy
 ```
 
-### 2. Run the Services
+### Option 2: Docker Compose (No Kubernetes)
 
-Use the helper script to start the mesh and all backend microservices:
+**Sidecar mode** - transparent proxying:
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  sidecar:
+    image: anthony4m/ananse-proxy:v1
+    environment:
+      - ANANSE_MODE=sidecar
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./scripts/iptables-init.sh:/iptables-init.sh
+    entrypoint: ["/bin/sh", "-c", "/iptables-init.sh && /ananse-proxy"]
+
+  my-app:
+    image: nginx
+    network_mode: "service:sidecar"
+    depends_on:
+      - sidecar
+```
+
+**Gateway mode** - reverse proxy:
+
+```yaml
+version: '3.8'
+services:
+  controlplane:
+    image: anthony4m/ananse-controlplane:v1
+    ports:
+      - "50051:50051"
+    volumes:
+      - ./config:/config
+
+  proxy:
+    image: anthony4m/ananse-proxy:v1
+    environment:
+      - ANANSE_MODE=gateway
+      - CONTROL_PLANE_ENDPOINT=controlplane:50051
+    ports:
+      - "8080:8080"
+```
+
+### Option 3: Local Development
 
 ```bash
-./start_services.sh
+# Run control plane
+go run ./controlplane/cmd/
+
+# Run proxy in gateway mode (default)
+go run ./proxy/
+
+# Run proxy in sidecar mode (requires Linux + iptables)
+ANANSE_MODE=sidecar go run ./proxy/
 ```
-
-The mesh entry point will be running at `http://localhost:8089`.
-
-### 3. Test the Proxy
-
-Send requests through the mesh to any backend service:
-
-```bash
-# Route to auth service
-curl http://localhost:8089/auth
-
-# Route to users service
-curl http://localhost:8089/users
-
-# Route to payments service
-curl http://localhost:8089/payments
-
-# Route to analytics service
-curl http://localhost:8089/analytics
-```
-
-The proxy will automatically load balance requests, handle failures with circuit breakers, and retry on transient errors.
-
-### 4. Watch Resilience in Action
-
-Open three terminals to observe the system under stress:
-
-**Terminal 1** - Generate load:
-```bash
-./load_test.sh
-```
-
-**Terminal 2** - Introduce chaos:
-```bash
-./chaos_monkey.sh
-```
-
-**Terminal 3** - Watch metrics:
-```bash
-# Check circuit breaker states
-curl http://localhost:8089/metrics | grep circuit_breaker_state
-
-# Check success vs failure rates
-curl http://localhost:8089/metrics | grep requests_total
-```
-
-Visit Grafana at [http://localhost:3000](http://localhost:3000) to see real-time dashboards showing:
-- Request latency percentiles (p50, p95, p99)
-- Circuit breaker state transitions
-- Backend health status
-- Error rate trends
-
-## 🧪 Experiments
-
-### Load Testing
-
-Simulate high traffic with spikes and variable latency:
-
-```bash
-./load_test.sh
-```
-
-### Chaos Engineering
-
-Unleash the Chaos Monkey to randomly kill and revive backend services:
-
-```bash
-./chaos_monkey.sh
-```
-
-## 📊 Monitoring
-
-- **Prometheus**: [http://localhost:9090](http://localhost:9090)
-- **Grafana**: [http://localhost:3000](http://localhost:3000) (Login: `admin` / `admin`)
 
 ---
 
-## 🗂️ Project Structure
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANANSE_MODE` | `gateway` | Operating mode: `gateway` or `sidecar` |
+| `SIDECAR_IMAGE` | `anthony4m/ananse-proxy:v1` | Image for injected sidecars |
+| `INIT_IMAGE` | `anthony4m/ananse-init:v1` | Image for init container |
+| `PROXY_PORT` | `15001` | Outbound listener port |
+| `INBOUND_PORT` | `15006` | Inbound listener port |
+| `PROXY_UID` | `1337` | UID for sidecar (iptables bypass) |
+
+### Pod Annotations
+
+| Annotation | Values | Description |
+|------------|--------|-------------|
+| `sidecar.ananse.io/inject` | `true`/`false` | Enable/disable sidecar injection |
+| `sidecar.ananse.io/status` | `injected` | Set automatically after injection |
+
+### Excluded Namespaces
+
+Injection is automatically skipped for:
+- `kube-system`
+- `kube-public`
+- `cert-manager`
+- `ananse-system`
+
+---
+
+## Project Structure
 
 ```
 ananse/
-├── cmd/
-│   ├── proxy/          # Main mesh data plane entry point
-│   ├── auth/           # Auth microservice
-│   ├── users/          # Users microservice
-│   ├── payments/       # Payments microservice
-│   └── analytics/      # Analytics microservice
-├── pkg/
-│   └── proxy/
-│       ├── backend.go      # Backend pool & state management
-│       ├── health.go       # Active health checking
-│       ├── circuit.go      # Circuit breaker implementation
-│       └── metrics.go      # Prometheus instrumentation
-├── chaos_monkey.sh     # Service disruption simulator
-├── load_test.sh        # High-concurrency stress test
-├── start_services.sh   # Start all services helper
-└── docker-compose.yml  # Prometheus + Grafana stack
+├── controlplane/
+│   ├── cmd/
+│   │   ├── main.go              # Control plane entry point
+│   │   └── server.go            # gRPC server
+│   ├── injector/
+│   │   ├── injector.go          # Sidecar injection logic
+│   │   └── webhook.go           # Webhook server
+│   ├── file-client.go           # File-based config watcher
+│   └── k8s-client.go            # K8s service discovery
+│
+├── pkg/proxy/
+│   ├── listener.go              # Inbound/outbound listeners
+│   ├── originaldst.go           # SO_ORIGINAL_DST syscall
+│   ├── handler.go               # Request handling
+│   ├── backend.go               # Backend pool management
+│   ├── health.go                # Health checking
+│   └── circuit.go               # Circuit breaker
+│
+├── proxy/
+│   └── main.go                  # Proxy entry point
+│
+├── scripts/
+│   ├── iptables-init.sh         # Traffic interception rules
+│   └── generate-certs.sh        # TLS certificate generation
+│
+├── deploy/
+│   ├── namespace.yaml
+│   ├── rbac.yaml
+│   ├── injector-config.yaml     # ConfigMap for image settings
+│   ├── webhook-deployment.yaml
+│   ├── webhook-service.yaml
+│   └── webhook-config.yaml      # MutatingWebhookConfiguration
+│
+└── docker/
+    ├── Dockerfile.controlplane
+    ├── Dockerfile.proxy
+    └── Dockerfile.init
 ```
 
 ---
 
-## 🤝 Contributing
+## Platform Requirements
 
-Contributions are welcome! This project is both a learning exercise and a practical implementation reference. Areas where contributions would be valuable:
+| Mode | Requirements |
+|------|--------------|
+| **Sidecar** | Linux, iptables, NET_ADMIN capability |
+| **Gateway** | Any OS (Linux, macOS, Windows) |
+| **Control Plane** | Any OS |
 
-- **Control Plane**: Dynamic service discovery and configuration management
-- **Distributed Tracing**: OpenTelemetry integration for request tracing
-- **Policy Engine**: Rate limiting, access control, and traffic shaping
-- **Documentation**: Architecture diagrams, runbooks, and tutorials
-- **Testing**: Additional chaos scenarios and edge case coverage
-
-### Getting Involved
-
-1. Check the **Known Challenges** section for areas needing improvement
-2. Review open issues or create one describing your proposed change
-3. Fork the repository and create a feature branch
-4. Ensure all tests pass and add new tests for your changes
-5. Submit a pull request with a clear description
+The sidecar mode uses `SO_ORIGINAL_DST` to recover original destinations after iptables REDIRECT. This is a Linux-only syscall.
 
 ---
 
-## 📄 License
+## Monitoring
+
+### Prometheus Metrics
+
+```bash
+curl http://localhost:9090/metrics
+```
+
+Key metrics:
+- `ananse_requests_total` - Request count by status
+- `ananse_request_duration_seconds` - Latency histogram
+- `ananse_circuit_breaker_state` - Circuit breaker status
+- `ananse_backend_health` - Backend health status
+
+### Grafana Dashboards
+
+Access Grafana at [http://localhost:3000](http://localhost:3000) (default: admin/admin)
+
+---
+
+## License
 
 MIT License

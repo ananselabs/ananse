@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-gateway
+  namespace: ananse
+  labels:
+    app: proxy-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy-gateway
+  template:
+    metadata:
+      labels:
+        app: proxy-gateway
+    spec:
+      serviceAccountName: ananse-controlplane
+      containers:
+      - name: proxy-debug
+        image: anthony4m/ananse-proxy:debug-v1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 2345
+        - containerPort: 8089
+        - containerPort: 9090
+        env:
+          - name: ANANSE_MODE
+            value: "sidecar"
+      - name: controlplane
+        image: controlplane:latest
+        imagePullPolicy: Never
+        args: ["--k8s"]
+        ports:
+        - containerPort: 50051
+        volumeMounts:
+        - name: config-volume
+          mountPath: /root/config
+      volumes:
+      - name: config-volume
+        configMap:
+          name: ananse-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: ananse
+spec:
+  selector:
+    app: proxy-gateway
+  ports:
+    - name: debug
+      protocol: TCP
+      port: 2345
+      targetPort: 2345
+    - name: http
+      port: 8089
+      targetPort: 8089
+    - name: metrics
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+  type: LoadBalancer

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: ananse-system
+  name: ananse-injector-config
+data:
+  SIDECAR_IMAGE: "anthony4m/ananse-proxy:v1"
+  INIT_IMAGE: "anthony4m/ananse-init:v1"
+  PROXY_PORT: "15001"
+  INBOUND_PORT: "15006"
+  PROXY_UID: "1337"

@@ -3,6 +3,7 @@ package main
 
 import (
 	cp "ananse/controlplane"
+	"ananse/controlplane/injector"
 	px "ananse/pkg/proxy"
 	"context"
 	"flag"
@@ -26,6 +27,7 @@ func main() {
 	configName := flag.String("config-name", "config", "Config file name (without extension)")
 	configType := flag.String("config-type", "yaml", "Config file type (yaml, json)")
 	grpcAddr := flag.String("addr", ":50051", "gRPC server address")
+	ananseNamespace := flag.String("ananse-namespace", "ananse", "Ananse namespace")
 	flag.Parse()
 
 	// Setup context with cancellation
@@ -37,7 +39,7 @@ func main() {
 	var watcher cp.ConfigWatcher
 	if *useK8s {
 		px.Logger.Info("Starting with Kubernetes service discovery")
-		k8sClient, err := cp.NewK8sClient("ananse")
+		k8sClient, err := cp.NewK8sClient(*ananseNamespace)
 		if err != nil {
 			px.Logger.Fatal("Failed to create K8s client", zap.Error(err))
 		}
@@ -48,6 +50,8 @@ func main() {
 			zap.String("config_name", *configName))
 		watcher = cp.NewFileClient(*configPath, *configName, *configType)
 	}
+
+	go injector.StartWebhookServer(":8443")
 
 	// Start watching for configs
 	configChan := watcher.Watch(ctx)

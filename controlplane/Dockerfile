@@ -12,5 +12,4 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /server ./controlplane/cmd
 FROM alpine:latest
 WORKDIR /root/
 COPY --from=builder /server .
-COPY --from=builder /app/config ./config
 ENTRYPOINT ["./server"]
