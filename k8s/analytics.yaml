@@ -22,6 +22,9 @@ spec:
       - name: analytics
         image: analytics:latest
         imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsNonRoot: true
         ports:
         - containerPort: 5004
         env:
