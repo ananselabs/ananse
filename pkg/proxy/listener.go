@@ -283,6 +283,11 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 
 	default:
 		Logger.Info("proxying protocol", zap.String("proto", prtDetect))
+		targetRW = readWriter{
+			Reader: bufio.NewReader(targetConn),
+			Writer: targetConn,
+			conn:   targetConn.(*net.TCPConn),
+		}
 	}
 
 	if err := proxyBidirectional(rw, targetRW); err != nil {
