@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-PROXY_UID=1337
+PROXY_UID="${PROXY_UID:-1337}" 
 PROXY_INBOUND_PORT=15006
 PROXY_OUTBOUND_PORT=15001
 APP_HEALTH_PORT=8080
@@ -24,6 +24,9 @@ iptables -t nat -A PREROUTING -p tcp -j ANANSE_PROXY_INBOUND
 
 # == OUTBOUND (OUTPUT - app-generated traffic leaving pod) ==
 # Loop prevention (CRITICAL - proxy's own traffic must pass through)
+if [ "$DEBUG_MODE" = "true" ]; then
+      PROXY_UID=0
+  fi
 iptables -t nat -A ANANSE_PROXY_OUTBOUND -m owner --uid-owner $PROXY_UID -j RETURN
 
 # Localhost bypass (app talking to itself)

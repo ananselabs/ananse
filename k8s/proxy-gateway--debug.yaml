@@ -20,6 +20,8 @@ spec:
       - name: proxy-debug
         image: anthony4m/ananse-proxy:debug-v1
         imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: ["while true; do /usr/local/bin/dlv exec /server --headless --listen=:2345 --api-version=2 --accept-multiclient --continue || true; sleep 2; done"]
         ports:
         - containerPort: 2345
         - containerPort: 8089
@@ -28,8 +30,8 @@ spec:
           - name: ANANSE_MODE
             value: "sidecar"
       - name: controlplane
-        image: controlplane:latest
-        imagePullPolicy: Never
+        image: anthony4m/ananse-controlplane:v1
+        imagePullPolicy: IfNotPresent
         args: ["--k8s"]
         ports:
         - containerPort: 50051

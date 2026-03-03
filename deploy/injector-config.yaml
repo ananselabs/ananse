@@ -9,3 +9,5 @@ data:
   PROXY_PORT: "15001"
   INBOUND_PORT: "15006"
   PROXY_UID: "1337"
+  CONTROL_PLANE_ENDPOINT: "ananse-controlplane.ananse-system.svc:50051"
+  DEBUG_MODE: "true"

@@ -1,26 +1,49 @@
 package proxy
 
 import (
-	"fmt"
+	"bufio"
 	"io"
 	"net"
-	"os"
+	"net/http"
+	"strings"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 const (
 	OutboundPort = ":15001"
 	InboundPort  = ":15006"
+	http2Preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 )
+
+var httpMethods = []string{"GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH "}
+
+type SideCarProxyState struct {
+	lb     *LoadBalancer
+	pool   *BackendPool
+	health *Health
+	router *Router
+}
+
+func NewSideCarProxyState(router *Router, lb *LoadBalancer, pool *BackendPool, health *Health) *SideCarProxyState {
+	return &SideCarProxyState{
+		lb:     lb,
+		pool:   pool,
+		health: health,
+		router: router,
+	}
+}
+
+// dont mind me, i needed a way to pass the reader into the function as a readwriter
+type readWriter struct {
+	io.Reader
+	io.Writer
+	closeWrite func() error
+}
 
 // StartSidecarProxy starts both inbound and outbound listeners
 func StartSidecarProxy() {
-	podName := os.Getenv("POD_NAME")
-	if podName == "" {
-		podName = fmt.Sprintf("proxy-%s", uuid.New().String()[:8])
-	}
+
 	go startOutboundListener()
 	go startInboundListener()
 
@@ -121,35 +144,68 @@ func startInboundListener() {
 
 func handleInboundConnection(clientConn *net.TCPConn) {
 	defer clientConn.Close()
+	_ = clientConn.SetNoDelay(true)
 
-	// Get original destination from SO_ORIGINAL_DST
-	// iptables REDIRECT preserves the original dest, so we recover it here
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+
+	dialChan := make(chan dialResult, 1)
+
 	origDst, err := getOriginalDst(clientConn)
 	if err != nil {
 		Logger.Error("failed to get original destination", zap.Error(err))
 		return
 	}
 
-	// Extract port from original destination and forward to localhost
 	_, port, err := net.SplitHostPort(origDst)
 	if err != nil {
-		Logger.Error("failed to parse original destination", zap.String("origDst", origDst), zap.Error(err))
+		Logger.Error("failed to parse original destination", zap.Error(err))
 		return
 	}
 	target := net.JoinHostPort("127.0.0.1", port)
 
-	Logger.Info("inbound connection", zap.String("target", target))
+	go func() {
+		conn, err := net.Dial("tcp", target)
+		dialChan <- dialResult{conn: conn, err: err}
+	}()
 
-	targetConn, err := net.Dial("tcp", target)
-	if err != nil {
-		Logger.Error("failed to dial app",
-			zap.String("target", target),
-			zap.Error(err))
+	reader := bufio.NewReader(clientConn)
+	header, _ := reader.Peek(24)
+	prtDetect := detectProtocol(header)
+
+	result := <-dialChan
+	if result.err != nil {
+		Logger.Error("failed to dial app", zap.Error(result.err))
 		return
 	}
+	targetConn := result.conn
 	defer targetConn.Close()
+	_ = targetConn.(*net.TCPConn).SetNoDelay(true)
 
-	if err := proxyBidirectional(clientConn, targetConn); err != nil {
+	switch prtDetect {
+	case "HTTP":
+		req, err := http.ReadRequest(reader)
+		if err == nil {
+			Logger.Info("HTTP Match", zap.String("path", req.URL.Path))
+			_ = req.Write(targetConn)
+			req.Body.Close() // ensure body fully consumed before bidirectional copy
+		}
+	default:
+		Logger.Info("proxying protocol", zap.String("proto", prtDetect))
+	}
+
+	rw := readWriter{
+		Reader:     reader,
+		Writer:     clientConn,
+		closeWrite: clientConn.CloseWrite,
+	}
+
+	// 2. Bidirectional copy for everything else (or the response)
+	// IMPORTANT: If we called req.Write, the 'reader' side of this
+	// copy will likely be empty/EOF for the request side.
+	if err := proxyBidirectional(rw, targetConn); err != nil {
 		Logger.Error("proxy error", zap.Error(err))
 	}
 }
@@ -160,43 +216,62 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 
 // proxyBidirectional copies data between src and dst in both directions
 // Waits for both directions to complete before returning
-func proxyBidirectional(src, dst net.Conn) error {
+func proxyBidirectional(src io.ReadWriter, dst net.Conn) error {
 	done := make(chan error, 2)
 
-	// Copy src -> dst
 	go func() {
 		_, err := io.Copy(dst, src)
-		if err != nil && err != io.EOF {
-			done <- err
-			return
+		if tc, ok := dst.(*net.TCPConn); ok {
+			tc.CloseWrite()
 		}
-		done <- nil
+		done <- err
 	}()
 
-	// Copy dst -> src
 	go func() {
 		_, err := io.Copy(src, dst)
-		if err != nil && err != io.EOF {
-			done <- err
-			return
+		// half-close the client write side if possible
+		if tc, ok := src.(interface{ CloseWrite() error }); ok {
+			tc.CloseWrite() // never reached — readWriter has no CloseWrite
 		}
-		done <- nil
+		done <- err
 	}()
 
-	// Wait for both to complete
 	err1 := <-done
 	err2 := <-done
-
-	// Close both sides gracefully
-	if tc, ok := src.(*net.TCPConn); ok {
-		tc.CloseRead()
-	}
-	if tc, ok := dst.(*net.TCPConn); ok {
-		tc.CloseWrite()
-	}
-
-	if err1 != nil {
+	if err1 != nil && err1 != io.EOF {
 		return err1
 	}
-	return err2
+	if err2 != nil && err2 != io.EOF {
+		return err2
+	}
+	return nil
+}
+
+func detectProtocol(peeked []byte) string {
+	if len(peeked) == 0 {
+		return "RAW_TCP"
+	}
+	if len(peeked) >= 3 &&
+		peeked[0] == 0x16 &&
+		peeked[1] == 0x03 &&
+		peeked[2] >= 0x01 && peeked[2] <= 0x04 {
+		return "TLS"
+	}
+
+	s := string(peeked)
+
+	// Check for HTTP/2 connection preface (standard for gRPC)
+	// The preface is "PRI * HTTP/2.0..."
+	if s == http2Preface {
+		return "HTTP2"
+	}
+
+	// Check for common HTTP methods
+	for _, m := range httpMethods {
+		if strings.HasPrefix(s, m) {
+			return "HTTP"
+		}
+	}
+
+	return "RAW_TCP"
 }

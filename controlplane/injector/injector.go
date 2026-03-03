@@ -22,13 +22,14 @@ import (
 
 var (
 	// CONFIGURATION - loaded from environment variables (set via ConfigMap)
-	SidecarImage      = getEnv("SIDECAR_IMAGE", "anthony4m/ananse-proxy:v1")
-	InitImage         = getEnv("INIT_IMAGE", "anthony4m/ananse-init:v1")
-	ProxyPort         = int32(getEnvInt("PROXY_PORT", 15001))
-	InboundPort       = int32(getEnvInt("INBOUND_PORT", 15006))
-	ProxyUID          = int64(getEnvInt("PROXY_UID", 1337))
-	DebugMode         = getEnv("DEBUG_MODE", "false") == "true"
-	IgnoredNamespaces = []string{
+	SidecarImage         = getEnv("SIDECAR_IMAGE", "anthony4m/ananse-proxy:v1")
+	InitImage            = getEnv("INIT_IMAGE", "anthony4m/ananse-init:v1")
+	ProxyPort            = int32(getEnvInt("PROXY_PORT", 15001))
+	InboundPort          = int32(getEnvInt("INBOUND_PORT", 15006))
+	ProxyUID             = int64(getEnvInt("PROXY_UID", 1337))
+	ControlPlaneEndpoint = getEnv("CONTROL_PLANE_ENDPOINT", "ananse-controlplane.ananse-system.svc:50051")
+	DebugMode            = getEnv("DEBUG_MODE", "false") == "true"
+	IgnoredNamespaces    = []string{
 		metav1.NamespaceSystem, // "kube-system"
 		metav1.NamespacePublic, // "kube-public"
 		"cert-manager",         // Prevent deadlock with cert-manager
@@ -209,7 +210,7 @@ func injectSidecar(pod *corev1.Pod) {
 	initContainer := corev1.Container{
 		Name:            "ananse-init",
 		Image:           InitImage,
-		ImagePullPolicy: corev1.PullAlways,
+		ImagePullPolicy: corev1.PullIfNotPresent,
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser: ptr(int64(0)), // Root (required for iptables)
 			Capabilities: &corev1.Capabilities{
@@ -220,7 +221,12 @@ func injectSidecar(pod *corev1.Pod) {
 		Env: []corev1.EnvVar{
 			{Name: "PROXY_PORT", Value: fmt.Sprintf("%d", ProxyPort)},
 			{Name: "INBOUND_PORT", Value: fmt.Sprintf("%d", InboundPort)},
-			{Name: "PROXY_UID", Value: fmt.Sprintf("%d", ProxyUID)},
+			{Name: "PROXY_UID", Value: func() string {
+				if DebugMode {
+					return "0"
+				}
+				return fmt.Sprintf("%d", ProxyUID)
+			}()},
 		},
 	}
 
@@ -228,7 +234,8 @@ func injectSidecar(pod *corev1.Pod) {
 	sidecarContainer := corev1.Container{
 		Name:            "ananse-proxy",
 		Image:           SidecarImage,
-		ImagePullPolicy: corev1.PullAlways,
+		ImagePullPolicy: corev1.PullIfNotPresent, // PullIfNotPresent for Kind local dev
+		// Don't override Command/Args - let the image's CMD run (includes Delve in debug images)
 		Ports: []corev1.ContainerPort{
 			{Name: "outbound", ContainerPort: 15001, Protocol: corev1.ProtocolTCP},
 			{Name: "inbound", ContainerPort: 15006, Protocol: corev1.ProtocolTCP},
@@ -268,6 +275,7 @@ func injectSidecar(pod *corev1.Pod) {
 			{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
 			}},
+			{Name: "CONTROL_PLANE_ENDPOINT", Value: ControlPlaneEndpoint},
 		},
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
