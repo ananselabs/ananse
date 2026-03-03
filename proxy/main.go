@@ -86,7 +86,7 @@ func main() {
 
 	// Sidecar mode: simple transparent proxy
 	if mode == "sidecar" {
-		px.StartSidecarProxy()
+		px.StartSidecarProxy(state, shutdownCh, ctx, cancel)
 		return
 	}
 

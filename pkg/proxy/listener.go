@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,24 +57,32 @@ func (rw readWriter) CloseWrite() error {
 }
 
 // StartSidecarProxy starts both inbound and outbound listeners
-func StartSidecarProxy() {
-
-	go startOutboundListener()
-	go startInboundListener()
+func StartSidecarProxy(state *ProxyState, shutdownCh chan os.Signal, ctx context.Context, cancel context.CancelFunc) {
+	sidecarProxy := NewSideCarProxyState(state.Router, state.LoadBalancer, state.BackendPool, state.Health)
 
 	Logger.Info("sidecar proxy started",
 		zap.String("outbound", OutboundPort),
 		zap.String("inbound", InboundPort))
+	go sidecarProxy.startInboundListener()
+	go sidecarProxy.startOutboundListener()
+	select {
+	case sig := <-shutdownCh:
+		Logger.Info("signal received, shutting down", zap.String("signal", sig.String()))
+	case <-ctx.Done():
+		Logger.Info("context cancelled, shutting down")
+	}
+	// 3. Perform cleanup
+	cancel()
+	// If your sidecarProxy has a .Stop() method, call it here
+	Logger.Info("sidecar proxy stopped")
 
-	// Block forever
-	select {}
 }
 
 // =====================================================================
 // OUTBOUND: App -> Sidecar -> Upstream Service
 // =====================================================================
 
-func startOutboundListener() {
+func (spx *SideCarProxyState) startOutboundListener() {
 	ln, err := net.Listen("tcp", OutboundPort)
 	if err != nil {
 		Logger.Fatal("failed to start outbound listener", zap.Error(err))
@@ -93,34 +104,183 @@ func startOutboundListener() {
 		}
 
 		// Handle each connection in a goroutine
-		go handleOutboundConnection(tcpConn)
+		go spx.handleOutboundConnection(tcpConn)
 	}
 }
 
-func handleOutboundConnection(clientConn *net.TCPConn) {
+func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) {
 	defer clientConn.Close()
+	RecordRequestStart()
+	defer RecordRequestEnd()
+	_ = clientConn.SetNoDelay(true)
+	if Logger == nil {
+		InitLogger()
+	}
+
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	dialChan := make(chan dialResult, 1)
+
+	Logger.Info("receiving outbound traffic")
 
 	// A. RECOVER ORIGINAL DESTINATION
 	// "Where did the app actually want to go?"
-	destAddr, err := getOriginalDst(clientConn)
+	target, err := getOriginalDst(clientConn)
 	if err != nil {
 		Logger.Error("failed to get original destination", zap.Error(err))
 		return
 	}
-	Logger.Info("outbound connection", zap.String("destination", destAddr))
+	Logger.Info("outbound connection", zap.String("destination", target))
 
 	// B. CONNECT TO UPSTREAM
-	targetConn, err := net.Dial("tcp", destAddr)
-	if err != nil {
-		Logger.Error("failed to connect upstream",
-			zap.String("destination", destAddr),
-			zap.Error(err))
+
+	go func() {
+		dialer := net.Dialer{Timeout: 2 * time.Second}
+		conn, err := dialer.Dial("tcp", target)
+		dialChan <- dialResult{conn: conn, err: err}
+	}()
+
+	reader := bufio.NewReader(clientConn)
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	header, _ := reader.Peek(4)
+	clientConn.SetReadDeadline(time.Time{})
+	prtDetect := spx.detectProtocol(header)
+
+	result := <-dialChan
+	if result.err != nil {
+		Logger.Error("failed to dial app", zap.Error(result.err))
 		return
 	}
+	targetConn := result.conn
 	defer targetConn.Close()
+	if tc, ok := targetConn.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+	var targetRW readWriter
+
+	switch prtDetect {
+	case "HTTP":
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			Logger.Error("failed to read HTTP request", zap.Error(err))
+			return
+		}
+
+		// Extract trace context from app's request
+		ctx := otel.GetTextMapPropagator().Extract(
+			req.Context(),
+			propagation.HeaderCarrier(req.Header),
+		)
+
+		// Create client span for outbound call
+		ctx, span := otel.Tracer("ananse").Start(ctx, "proxy.outbound",
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("http.method", req.Method),
+				attribute.String("http.url", req.URL.String()),
+				attribute.String("http.host", req.Host),
+				attribute.String("peer.address", target),
+			),
+		)
+		defer span.End()
+		Logger.Info("outbound span created", zap.String("traceID", span.SpanContext().TraceID().String()))
+
+		// Inject span context into upstream request
+		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+		// Add forwarding headers
+		host, _, err := net.SplitHostPort(clientConn.RemoteAddr().String())
+		if err != nil {
+			host = clientConn.RemoteAddr().String()
+		}
+		if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
+			req.Header.Set("X-Forwarded-For", prior+", "+host)
+		} else {
+			req.Header.Set("X-Forwarded-For", host)
+		}
+		if req.TLS == nil {
+			req.Header.Set("X-Forwarded-Proto", "http")
+		} else {
+			req.Header.Set("X-Forwarded-Proto", "https")
+		}
+
+		// Ensure request ID exists
+		rid := req.Header.Get("X-Request-ID")
+		if rid == "" {
+			rid = strconv.FormatInt(time.Now().UnixNano(), 10)
+			req.Header.Set("X-Request-ID", rid)
+		}
+
+		Logger.Info("outbound HTTP request",
+			zap.String("method", req.Method),
+			zap.String("path", req.URL.Path),
+			zap.String("host", req.Host),
+			zap.String("target", target),
+			zap.String("request_id", rid),
+		)
+
+		// Forward request to upstream
+		requestStart := time.Now()
+		if err := req.Write(targetConn); err != nil {
+			Logger.Error("failed to forward outbound request", zap.Error(err))
+			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+		req.Body.Close()
+
+		// Read response from upstream
+		targetReader := bufio.NewReader(targetConn)
+		resp, err := http.ReadResponse(targetReader, req)
+		if err != nil {
+			Logger.Error("failed to read upstream response", zap.Error(err))
+			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+
+		span.SetAttributes(
+			attribute.Int("http.status_code", resp.StatusCode),
+			attribute.Float64("http.duration", time.Since(requestStart).Seconds()),
+		)
+		Logger.Info("outbound HTTP response",
+			zap.Int("status", resp.StatusCode),
+			zap.Float64("duration_s", time.Since(requestStart).Seconds()),
+		)
+
+		// Forward response back to app
+		if err := resp.Write(clientConn); err != nil {
+			Logger.Error("failed to write response to app", zap.Error(err))
+			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+		resp.Body.Close()
+
+		Logger.Info("outbound response successful", zap.String("request_id", rid))
+
+		// Health checks are single request/response - skip bidirectional proxy
+		if req.URL.Path == "/health" || req.URL.Path == "/healthz" || req.URL.Path == "/ready" {
+			return
+		}
+
+		// targetReader may have buffered bytes (keepalive / pipelined requests)
+		targetRW = readWriter{
+			Reader: targetReader,
+			Writer: targetConn,
+			conn:   targetConn.(*net.TCPConn),
+		}
+
+	default:
+		Logger.Info("proxying protocol", zap.String("proto", prtDetect))
+		targetRW = readWriter{
+			Reader: bufio.NewReader(targetConn),
+			Writer: targetConn,
+			conn:   targetConn.(*net.TCPConn),
+		}
+	}
 
 	// C. PROXY DATA (Bidirectional Copy)
-	if err := proxyBidirectional(clientConn, targetConn); err != nil {
+	if err := spx.proxyBidirectional(clientConn, targetRW); err != nil {
 		Logger.Error("proxy error", zap.Error(err))
 	}
 }
@@ -129,7 +289,7 @@ func handleOutboundConnection(clientConn *net.TCPConn) {
 // INBOUND: Internet -> Sidecar -> App
 // =====================================================================
 
-func startInboundListener() {
+func (spx *SideCarProxyState) startInboundListener() {
 	ln, err := net.Listen("tcp", InboundPort)
 	if err != nil {
 		Logger.Fatal("failed to start inbound listener", zap.Error(err))
@@ -150,11 +310,11 @@ func startInboundListener() {
 			continue
 		}
 
-		go handleInboundConnection(tcpConn)
+		go spx.handleInboundConnection(tcpConn)
 	}
 }
 
-func handleInboundConnection(clientConn *net.TCPConn) {
+func (spx *SideCarProxyState) handleInboundConnection(clientConn *net.TCPConn) {
 	RecordRequestStart()
 	defer RecordRequestEnd()
 	defer clientConn.Close()
@@ -191,7 +351,7 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 	// peek while dialing to hide latency
 	reader := bufio.NewReader(clientConn)
 	header, _ := reader.Peek(24)
-	prtDetect := detectProtocol(header)
+	prtDetect := spx.detectProtocol(header)
 
 	result := <-dialChan
 	if result.err != nil {
@@ -300,7 +460,7 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 		}
 	}
 
-	if err := proxyBidirectional(rw, targetRW); err != nil {
+	if err := spx.proxyBidirectional(rw, targetRW); err != nil {
 		Logger.Error("proxy error", zap.Error(err))
 	}
 }
@@ -313,7 +473,7 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 // Each goroutine half-closes its write end when done so the other side
 // receives EOF and can exit cleanly, avoiding deadlocks on long-lived
 // connections (gRPC, databases, etc).
-func proxyBidirectional(src, dst io.ReadWriter) error {
+func (spx *SideCarProxyState) proxyBidirectional(src, dst io.ReadWriter) error {
 	done := make(chan error, 2)
 
 	// src -> dst
@@ -346,7 +506,7 @@ func proxyBidirectional(src, dst io.ReadWriter) error {
 	return nil
 }
 
-func detectProtocol(peeked []byte) string {
+func (spx *SideCarProxyState) detectProtocol(peeked []byte) string {
 	if len(peeked) == 0 {
 		return "RAW_TCP"
 	}
