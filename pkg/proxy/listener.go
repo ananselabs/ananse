@@ -6,7 +6,12 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -38,7 +43,14 @@ func NewSideCarProxyState(router *Router, lb *LoadBalancer, pool *BackendPool, h
 type readWriter struct {
 	io.Reader
 	io.Writer
-	closeWrite func() error
+	conn *net.TCPConn
+}
+
+func (rw readWriter) CloseWrite() error {
+	if rw.conn != nil {
+		return rw.conn.CloseWrite()
+	}
+	return nil
 }
 
 // StartSidecarProxy starts both inbound and outbound listeners
@@ -143,6 +155,8 @@ func startInboundListener() {
 }
 
 func handleInboundConnection(clientConn *net.TCPConn) {
+	RecordRequestStart()
+	defer RecordRequestEnd()
 	defer clientConn.Close()
 	_ = clientConn.SetNoDelay(true)
 
@@ -150,7 +164,6 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 		conn net.Conn
 		err  error
 	}
-
 	dialChan := make(chan dialResult, 1)
 
 	origDst, err := getOriginalDst(clientConn)
@@ -167,10 +180,12 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 	target := net.JoinHostPort("127.0.0.1", port)
 
 	go func() {
-		conn, err := net.Dial("tcp", target)
+		dialer := net.Dialer{Timeout: 2 * time.Second}
+		conn, err := dialer.Dial("tcp", target)
 		dialChan <- dialResult{conn: conn, err: err}
 	}()
 
+	// peek while dialing to hide latency
 	reader := bufio.NewReader(clientConn)
 	header, _ := reader.Peek(24)
 	prtDetect := detectProtocol(header)
@@ -182,30 +197,95 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 	}
 	targetConn := result.conn
 	defer targetConn.Close()
-	_ = targetConn.(*net.TCPConn).SetNoDelay(true)
+	if tc, ok := targetConn.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+
+	// build readWriters — initialized here so both branches can assign targetRW
+	rw := readWriter{
+		Reader: reader,
+		Writer: clientConn,
+		conn:   clientConn,
+	}
+	var targetRW readWriter
 
 	switch prtDetect {
 	case "HTTP":
 		req, err := http.ReadRequest(reader)
-		if err == nil {
-			Logger.Info("HTTP Match", zap.String("path", req.URL.Path))
-			_ = req.Write(targetConn)
-			req.Body.Close() // ensure body fully consumed before bidirectional copy
+		if err != nil {
+			Logger.Error("failed to read HTTP request", zap.Error(err))
+			return
 		}
+
+		ctx := otel.GetTextMapPropagator().Extract(
+			req.Context(),
+			propagation.HeaderCarrier(req.Header),
+		)
+		ctx, span := otel.Tracer("ananse").Start(ctx, "proxy.handle_request",
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(
+				attribute.String("http.method", req.Method),
+				attribute.String("http.url", req.URL.Path),
+				attribute.String("http.host", req.Host),
+			),
+		)
+		Logger.Info("span created", zap.String("traceID", span.SpanContext().TraceID().String()))
+		defer span.End()
+
+		// inject span context into forwarded request so upstream can attach to this trace
+		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+		Logger.Info("HTTP match", zap.String("path", req.URL.Path))
+
+		requestStart := time.Now()
+		if err := req.Write(targetConn); err != nil {
+			Logger.Error("failed to forward HTTP request", zap.Error(err))
+			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+		req.Body.Close()
+
+		// intercept response for observability before forwarding to client
+		targetReader := bufio.NewReader(targetConn)
+		resp, err := http.ReadResponse(targetReader, req)
+		if err != nil {
+			Logger.Error("failed to read HTTP response", zap.Error(err))
+			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+
+		span.SetAttributes(
+			attribute.Int("http.status_code", resp.StatusCode),
+			attribute.Float64("req.duration", time.Since(requestStart).Seconds()),
+		)
+		Logger.Info("HTTP response",
+			zap.Int("status", resp.StatusCode),
+			zap.Float64("duration_s", time.Since(requestStart).Seconds()),
+		)
+
+		if err := resp.Write(clientConn); err != nil {
+			Logger.Error("failed to write HTTP response to client", zap.Error(err))
+			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+		if err := resp.Body.Close(); err != nil {
+			Logger.Error("failed to close response body", zap.Error(err))
+			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+
+		// targetReader may have buffered bytes (keepalive / pipelined requests)
+		// so wrap it rather than using targetConn directly
+		targetRW = readWriter{
+			Reader: targetReader,
+			Writer: targetConn,
+			conn:   targetConn.(*net.TCPConn),
+		}
+
 	default:
 		Logger.Info("proxying protocol", zap.String("proto", prtDetect))
 	}
 
-	rw := readWriter{
-		Reader:     reader,
-		Writer:     clientConn,
-		closeWrite: clientConn.CloseWrite,
-	}
-
-	// 2. Bidirectional copy for everything else (or the response)
-	// IMPORTANT: If we called req.Write, the 'reader' side of this
-	// copy will likely be empty/EOF for the request side.
-	if err := proxyBidirectional(rw, targetConn); err != nil {
+	if err := proxyBidirectional(rw, targetRW); err != nil {
 		Logger.Error("proxy error", zap.Error(err))
 	}
 }
@@ -214,30 +294,34 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 // BIDIRECTIONAL PROXY
 // =====================================================================
 
-// proxyBidirectional copies data between src and dst in both directions
-// Waits for both directions to complete before returning
-func proxyBidirectional(src io.ReadWriter, dst net.Conn) error {
+// proxyBidirectional copies data between src and dst in both directions.
+// Each goroutine half-closes its write end when done so the other side
+// receives EOF and can exit cleanly, avoiding deadlocks on long-lived
+// connections (gRPC, databases, etc).
+func proxyBidirectional(src, dst io.ReadWriter) error {
 	done := make(chan error, 2)
 
+	// src -> dst
 	go func() {
 		_, err := io.Copy(dst, src)
-		if tc, ok := dst.(*net.TCPConn); ok {
+		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
 			tc.CloseWrite()
 		}
 		done <- err
 	}()
 
+	// dst -> src
 	go func() {
 		_, err := io.Copy(src, dst)
-		// half-close the client write side if possible
 		if tc, ok := src.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite() // never reached — readWriter has no CloseWrite
+			tc.CloseWrite()
 		}
 		done <- err
 	}()
 
 	err1 := <-done
 	err2 := <-done
+
 	if err1 != nil && err1 != io.EOF {
 		return err1
 	}
