@@ -159,6 +159,9 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 	defer RecordRequestEnd()
 	defer clientConn.Close()
 	_ = clientConn.SetNoDelay(true)
+	if Logger == nil {
+		InitLogger()
+	}
 
 	type dialResult struct {
 		conn net.Conn
@@ -270,6 +273,13 @@ func handleInboundConnection(clientConn *net.TCPConn) {
 		if err := resp.Body.Close(); err != nil {
 			Logger.Error("failed to close response body", zap.Error(err))
 			span.SetAttributes(attribute.String("error", err.Error()))
+			return
+		}
+
+		Logger.Info("Response successful", zap.String("connection", clientConn.RemoteAddr().String()))
+
+		// Health checks are single request/response - skip bidirectional proxy
+		if req.URL.Path == "/health" || req.URL.Path == "/healthz" || req.URL.Path == "/ready" {
 			return
 		}
 
