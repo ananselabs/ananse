@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.2
-// source: controlplane/cmd/controlplane.proto
+// source: controlplane.proto
 
 package configpb
 
@@ -120,5 +120,5 @@ var ControlPlane_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "controlplane/cmd/controlplane.proto",
+	Metadata: "controlplane.proto",
 }

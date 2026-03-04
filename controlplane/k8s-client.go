@@ -177,8 +177,16 @@ func (k *K8sClient) buildConfig() *pb.Config {
 			continue
 		}
 
+		// Get service port (use first port)
+		var servicePort int32
+		if len(svc.Spec.Ports) > 0 {
+			servicePort = svc.Spec.Ports[0].Port
+		}
+
 		cfg.Services = append(cfg.Services, &pb.Service{
 			Name:      svc.Name,
+			ClusterIp: svc.Spec.ClusterIP,
+			Port:      servicePort,
 			Endpoints: endpoints,
 			Routes: []*pb.Route{
 				{

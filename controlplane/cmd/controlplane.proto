@@ -13,6 +13,8 @@ message Service {
   string name = 1;
   repeated Route routes = 2;
   repeated Endpoint endpoints = 3;
+  string cluster_ip = 4;  // Kubernetes Service ClusterIP for VIP routing
+  int32 port = 5;         // Service port
 }
 
 message Route {

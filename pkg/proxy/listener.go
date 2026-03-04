@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
@@ -113,20 +115,12 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 	RecordRequestStart()
 	defer RecordRequestEnd()
 	_ = clientConn.SetNoDelay(true)
-	if Logger == nil {
-		InitLogger()
-	}
 
-	type dialResult struct {
-		conn net.Conn
-		err  error
-	}
-	dialChan := make(chan dialResult, 1)
+	startTime := time.Now() // ← Add this
 
 	Logger.Info("receiving outbound traffic")
 
 	// A. RECOVER ORIGINAL DESTINATION
-	// "Where did the app actually want to go?"
 	target, err := getOriginalDst(clientConn)
 	if err != nil {
 		Logger.Error("failed to get original destination", zap.Error(err))
@@ -134,30 +128,13 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 	}
 	Logger.Info("outbound connection", zap.String("destination", target))
 
-	// B. CONNECT TO UPSTREAM
-
-	go func() {
-		dialer := net.Dialer{Timeout: 2 * time.Second}
-		conn, err := dialer.Dial("tcp", target)
-		dialChan <- dialResult{conn: conn, err: err}
-	}()
-
+	// B. DETECT PROTOCOL (before service discovery)
 	reader := bufio.NewReader(clientConn)
 	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	header, _ := reader.Peek(4)
+	header, _ := reader.Peek(24) // ← Peek more bytes for HTTP
 	clientConn.SetReadDeadline(time.Time{})
 	prtDetect := spx.detectProtocol(header)
 
-	result := <-dialChan
-	if result.err != nil {
-		Logger.Error("failed to dial app", zap.Error(result.err))
-		return
-	}
-	targetConn := result.conn
-	defer targetConn.Close()
-	if tc, ok := targetConn.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-	}
 	var targetRW readWriter
 
 	switch prtDetect {
@@ -168,13 +145,13 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 			return
 		}
 
-		// Extract trace context from app's request
+		// Extract trace context
 		ctx := otel.GetTextMapPropagator().Extract(
 			req.Context(),
 			propagation.HeaderCarrier(req.Header),
 		)
 
-		// Create client span for outbound call
+		// Create root span
 		ctx, span := otel.Tracer("ananse").Start(ctx, "proxy.outbound",
 			trace.WithSpanKind(trace.SpanKindClient),
 			trace.WithAttributes(
@@ -185,85 +162,236 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 			),
 		)
 		defer span.End()
-		Logger.Info("outbound span created", zap.String("traceID", span.SpanContext().TraceID().String()))
 
-		// Inject span context into upstream request
+		// Inject span context
 		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
-		// Add forwarding headers
-		host, _, err := net.SplitHostPort(clientConn.RemoteAddr().String())
+		// C. SERVICE DISCOVERY (VIP lookup)
+		_, routeSpan := otel.Tracer("ananse").Start(ctx, "proxy.route_lookup")
+		serviceName, err := spx.router.FindServiceByVIP(target)
 		if err != nil {
-			host = clientConn.RemoteAddr().String()
+			routeSpan.RecordError(err)
+			routeSpan.SetStatus(codes.Error, "route not found")
+			routeSpan.End()
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "route not found")
+			Logger.Error("No matching route", zap.String("target", target), zap.Error(err))
+			return
 		}
-		if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
-			req.Header.Set("X-Forwarded-For", prior+", "+host)
-		} else {
-			req.Header.Set("X-Forwarded-For", host)
-		}
-		if req.TLS == nil {
+		routeSpan.SetAttributes(attribute.String("mesh.service", serviceName))
+		routeSpan.End()
+		span.SetAttributes(attribute.String("mesh.service", serviceName))
+
+		// D. RETRY LOOP (load balance + dial + forward)
+		maxRetries := 3
+		var backend *Backend
+		var resp *http.Response
+		var lastErr error
+		var targetConn net.Conn
+		var targetReader *bufio.Reader
+
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			// D1. LOAD BALANCE
+			_, lbSpan := otel.Tracer("ananse").Start(ctx, "proxy.load_balance",
+				trace.WithAttributes(
+					attribute.Int("mesh.attempt", attempt+1),
+				),
+			)
+
+			backend, lastErr = spx.lb.GetNextPeer(serviceName)
+			if lastErr != nil || backend == nil {
+				lbSpan.RecordError(lastErr)
+				lbSpan.SetStatus(codes.Error, "no backend available")
+				lbSpan.End()
+
+				Logger.Error("No backend available", zap.Error(lastErr), zap.Int("attempt", attempt+1))
+				if attempt < maxRetries-1 {
+					span.AddEvent("retry_attempt",
+						trace.WithAttributes(
+							attribute.Int("attempt", attempt+1),
+							attribute.String("reason", "no backend available"),
+						),
+					)
+					continue
+				}
+				span.RecordError(lastErr)
+				span.SetStatus(codes.Error, "no backend available")
+				return
+			}
+
+			lbSpan.SetAttributes(attribute.String("mesh.backend", backend.Name))
+			lbSpan.End()
+			span.SetAttributes(attribute.String("mesh.backend", backend.Name))
+
+			// D2. DIAL SELECTED BACKEND
+			_, dialSpan := otel.Tracer("ananse").Start(ctx, "proxy.dial_backend",
+				trace.WithAttributes(
+					attribute.String("peer.address", backend.TargetUrl.Host), // ✅ Host:port
+				),
+			)
+
+			backend.IncrementActiveRequests()
+
+			dialer := net.Dialer{Timeout: 2 * time.Second}
+			targetConn, err = dialer.Dial("tcp", backend.TargetUrl.Host)
+			if err != nil {
+				backend.DecrementActiveRequests() // Cleanup failed attempt
+				dialSpan.RecordError(err)
+				dialSpan.SetStatus(codes.Error, err.Error())
+				dialSpan.End()
+
+				Logger.Error("failed to dial backend", zap.Error(err), zap.String("backend", backend.Name))
+				RecordBackendFailure(backend.Name)
+				spx.pool.UpdateBackendStatus(serviceName, backend.Name, false, spx.health.GetHealthCheckInterval())
+
+				lastErr = err
+				if attempt < maxRetries-1 {
+					span.AddEvent("retry_attempt",
+						trace.WithAttributes(
+							attribute.Int("attempt", attempt+1),
+							attribute.String("backend", backend.Name),
+							attribute.String("reason", "dial failed"),
+						),
+					)
+					RecordRetryAttempt(backend.Name)
+					continue
+				}
+				span.RecordError(lastErr)
+				span.SetStatus(codes.Error, "all retries failed")
+				return
+			}
+
+			if tc, ok := targetConn.(*net.TCPConn); ok {
+				_ = tc.SetNoDelay(true)
+			}
+
+			dialSpan.SetStatus(codes.Ok, "")
+			dialSpan.End()
+
+			// D3. FORWARD REQUEST
+			_, forwardSpan := otel.Tracer("ananse").Start(ctx, "proxy.forward_request",
+				trace.WithAttributes(
+					attribute.String("peer.service", serviceName),
+					attribute.String("peer.address", backend.TargetUrl.Host), // ✅
+				),
+			)
+
+			// Add forwarding headers
+			host, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+			if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
+				req.Header.Set("X-Forwarded-For", prior+", "+host)
+			} else {
+				req.Header.Set("X-Forwarded-For", host)
+			}
 			req.Header.Set("X-Forwarded-Proto", "http")
-		} else {
-			req.Header.Set("X-Forwarded-Proto", "https")
+
+			// Ensure request ID
+			rid := req.Header.Get("X-Request-ID")
+			if rid == "" {
+				rid = strconv.FormatInt(time.Now().UnixNano(), 10)
+				req.Header.Set("X-Request-ID", rid)
+			}
+
+			requestStart := time.Now()
+			if err := req.Write(targetConn); err != nil {
+				targetConn.Close()
+				backend.DecrementActiveRequests()
+				forwardSpan.RecordError(err)
+				forwardSpan.SetStatus(codes.Error, err.Error())
+				forwardSpan.End()
+
+				Logger.Error("failed to forward request", zap.Error(err))
+				RecordBackendFailure(backend.Name)
+				spx.pool.UpdateBackendStatus(serviceName, backend.Name, false, spx.health.GetHealthCheckInterval())
+
+				lastErr = err
+				if attempt < maxRetries-1 {
+					RecordRetryAttempt(backend.Name)
+					continue
+				}
+				span.RecordError(lastErr)
+				span.SetStatus(codes.Error, "all retries failed")
+				return
+			}
+			req.Body.Close()
+
+			// D4. READ RESPONSE
+			targetReader = bufio.NewReader(targetConn)
+			resp, err = http.ReadResponse(targetReader, req)
+			if err != nil {
+				targetConn.Close()
+				backend.DecrementActiveRequests()
+				forwardSpan.RecordError(err)
+				forwardSpan.SetStatus(codes.Error, err.Error())
+				forwardSpan.End()
+
+				Logger.Error("failed to read response", zap.Error(err))
+				RecordBackendFailure(backend.Name)
+				spx.pool.UpdateBackendStatus(serviceName, backend.Name, false, spx.health.GetHealthCheckInterval())
+
+				lastErr = err
+				if attempt < maxRetries-1 {
+					RecordRetryAttempt(backend.Name)
+					continue
+				}
+				span.RecordError(lastErr)
+				span.SetStatus(codes.Error, "all retries failed")
+				return
+			}
+
+			// Success!
+			duration := time.Since(requestStart).Seconds()
+			forwardSpan.SetAttributes(
+				attribute.Int("http.status_code", resp.StatusCode),
+				attribute.Float64("http.duration_seconds", duration),
+			)
+
+			if resp.StatusCode >= 500 {
+				forwardSpan.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", resp.StatusCode))
+				RecordBackendFailure(backend.Name)
+			} else {
+				forwardSpan.SetStatus(codes.Ok, "")
+			}
+			forwardSpan.End()
+
+			span.SetAttributes(
+				attribute.Int("http.status_code", resp.StatusCode),
+				attribute.Float64("http.duration_seconds", time.Since(startTime).Seconds()),
+			)
+
+			RecordRequest(backend.Name, req.Method, strconv.Itoa(resp.StatusCode), duration)
+
+			// Got a successful response, exit retry loop
+			break
 		}
 
-		// Ensure request ID exists
-		rid := req.Header.Get("X-Request-ID")
-		if rid == "" {
-			rid = strconv.FormatInt(time.Now().UnixNano(), 10)
-			req.Header.Set("X-Request-ID", rid)
-		}
-
-		Logger.Info("outbound HTTP request",
-			zap.String("method", req.Method),
-			zap.String("path", req.URL.Path),
-			zap.String("host", req.Host),
-			zap.String("target", target),
-			zap.String("request_id", rid),
-		)
-
-		// Forward request to upstream
-		requestStart := time.Now()
-		if err := req.Write(targetConn); err != nil {
-			Logger.Error("failed to forward outbound request", zap.Error(err))
-			span.SetAttributes(attribute.String("error", err.Error()))
+		// E. FORWARD RESPONSE TO CLIENT
+		if resp == nil {
+			// All retries failed (cleanup already done in loop)
+			span.RecordError(lastErr)
+			span.SetStatus(codes.Error, "all retries failed")
 			return
 		}
-		req.Body.Close()
 
-		// Read response from upstream
-		targetReader := bufio.NewReader(targetConn)
-		resp, err := http.ReadResponse(targetReader, req)
-		if err != nil {
-			Logger.Error("failed to read upstream response", zap.Error(err))
-			span.SetAttributes(attribute.String("error", err.Error()))
-			return
-		}
+		// Success path: cleanup when function exits
+		defer targetConn.Close()
+		defer backend.DecrementActiveRequests()
 
-		span.SetAttributes(
-			attribute.Int("http.status_code", resp.StatusCode),
-			attribute.Float64("http.duration", time.Since(requestStart).Seconds()),
-		)
-		Logger.Info("outbound HTTP response",
-			zap.Int("status", resp.StatusCode),
-			zap.Float64("duration_s", time.Since(requestStart).Seconds()),
-		)
-
-		// Forward response back to app
 		if err := resp.Write(clientConn); err != nil {
-			Logger.Error("failed to write response to app", zap.Error(err))
+			Logger.Error("failed to write response to client", zap.Error(err))
 			span.SetAttributes(attribute.String("error", err.Error()))
 			return
 		}
 		resp.Body.Close()
 
-		Logger.Info("outbound response successful", zap.String("request_id", rid))
+		Logger.Info("outbound response successful")
 
-		// Health checks are single request/response - skip bidirectional proxy
+		// Skip bidirectional for health checks
 		if req.URL.Path == "/health" || req.URL.Path == "/healthz" || req.URL.Path == "/ready" {
 			return
 		}
 
-		// targetReader may have buffered bytes (keepalive / pipelined requests)
+		// For keepalive/pipelining, continue proxying
 		targetRW = readWriter{
 			Reader: targetReader,
 			Writer: targetConn,
@@ -271,7 +399,17 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 		}
 
 	default:
-		Logger.Info("proxying protocol", zap.String("proto", prtDetect))
+		// Non-HTTP protocols: dial original destination
+		Logger.Info("proxying non-HTTP protocol", zap.String("proto", prtDetect))
+
+		dialer := net.Dialer{Timeout: 2 * time.Second}
+		targetConn, err := dialer.Dial("tcp", target)
+		if err != nil {
+			Logger.Error("failed to dial target", zap.Error(err))
+			return
+		}
+		defer targetConn.Close()
+
 		targetRW = readWriter{
 			Reader: bufio.NewReader(targetConn),
 			Writer: targetConn,
@@ -279,7 +417,7 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 		}
 	}
 
-	// C. PROXY DATA (Bidirectional Copy)
+	// F. BIDIRECTIONAL PROXY (for remaining data)
 	if err := spx.proxyBidirectional(clientConn, targetRW); err != nil {
 		Logger.Error("proxy error", zap.Error(err))
 	}

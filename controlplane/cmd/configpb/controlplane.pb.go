@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.33.2
-// source: controlplane/cmd/controlplane.proto
+// source: controlplane.proto
 
 package configpb
 
@@ -27,13 +27,15 @@ type Service struct {
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Routes        []*Route               `protobuf:"bytes,2,rep,name=routes,proto3" json:"routes,omitempty"`
 	Endpoints     []*Endpoint            `protobuf:"bytes,3,rep,name=endpoints,proto3" json:"endpoints,omitempty"`
+	ClusterIp     string                 `protobuf:"bytes,4,opt,name=cluster_ip,json=clusterIp,proto3" json:"cluster_ip,omitempty"` // Kubernetes Service ClusterIP for VIP routing
+	Port          int32                  `protobuf:"varint,5,opt,name=port,proto3" json:"port,omitempty"`                           // Service port
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Service) Reset() {
 	*x = Service{}
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[0]
+	mi := &file_controlplane_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -45,7 +47,7 @@ func (x *Service) String() string {
 func (*Service) ProtoMessage() {}
 
 func (x *Service) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[0]
+	mi := &file_controlplane_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -58,7 +60,7 @@ func (x *Service) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Service.ProtoReflect.Descriptor instead.
 func (*Service) Descriptor() ([]byte, []int) {
-	return file_controlplane_cmd_controlplane_proto_rawDescGZIP(), []int{0}
+	return file_controlplane_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Service) GetName() string {
@@ -82,6 +84,20 @@ func (x *Service) GetEndpoints() []*Endpoint {
 	return nil
 }
 
+func (x *Service) GetClusterIp() string {
+	if x != nil {
+		return x.ClusterIp
+	}
+	return ""
+}
+
+func (x *Service) GetPort() int32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
 type Route struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
@@ -92,7 +108,7 @@ type Route struct {
 
 func (x *Route) Reset() {
 	*x = Route{}
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[1]
+	mi := &file_controlplane_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -104,7 +120,7 @@ func (x *Route) String() string {
 func (*Route) ProtoMessage() {}
 
 func (x *Route) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[1]
+	mi := &file_controlplane_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -117,7 +133,7 @@ func (x *Route) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Route.ProtoReflect.Descriptor instead.
 func (*Route) Descriptor() ([]byte, []int) {
-	return file_controlplane_cmd_controlplane_proto_rawDescGZIP(), []int{1}
+	return file_controlplane_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Route) GetPath() string {
@@ -143,7 +159,7 @@ type Endpoint struct {
 
 func (x *Endpoint) Reset() {
 	*x = Endpoint{}
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[2]
+	mi := &file_controlplane_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -155,7 +171,7 @@ func (x *Endpoint) String() string {
 func (*Endpoint) ProtoMessage() {}
 
 func (x *Endpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[2]
+	mi := &file_controlplane_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -168,7 +184,7 @@ func (x *Endpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Endpoint.ProtoReflect.Descriptor instead.
 func (*Endpoint) Descriptor() ([]byte, []int) {
-	return file_controlplane_cmd_controlplane_proto_rawDescGZIP(), []int{2}
+	return file_controlplane_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Endpoint) GetAddress() string {
@@ -189,7 +205,7 @@ type ProxyConfig struct {
 
 func (x *ProxyConfig) Reset() {
 	*x = ProxyConfig{}
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[3]
+	mi := &file_controlplane_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -201,7 +217,7 @@ func (x *ProxyConfig) String() string {
 func (*ProxyConfig) ProtoMessage() {}
 
 func (x *ProxyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[3]
+	mi := &file_controlplane_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -214,7 +230,7 @@ func (x *ProxyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProxyConfig.ProtoReflect.Descriptor instead.
 func (*ProxyConfig) Descriptor() ([]byte, []int) {
-	return file_controlplane_cmd_controlplane_proto_rawDescGZIP(), []int{3}
+	return file_controlplane_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ProxyConfig) GetPort() int32 {
@@ -250,7 +266,7 @@ type Config struct {
 
 func (x *Config) Reset() {
 	*x = Config{}
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[4]
+	mi := &file_controlplane_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -262,7 +278,7 @@ func (x *Config) String() string {
 func (*Config) ProtoMessage() {}
 
 func (x *Config) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[4]
+	mi := &file_controlplane_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -275,7 +291,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Config.ProtoReflect.Descriptor instead.
 func (*Config) Descriptor() ([]byte, []int) {
-	return file_controlplane_cmd_controlplane_proto_rawDescGZIP(), []int{4}
+	return file_controlplane_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Config) GetServices() []*Service {
@@ -319,7 +335,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[5]
+	mi := &file_controlplane_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -331,7 +347,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_cmd_controlplane_proto_msgTypes[5]
+	mi := &file_controlplane_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -344,7 +360,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_cmd_controlplane_proto_rawDescGZIP(), []int{5}
+	return file_controlplane_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SubscribeRequest) GetProxyId() string {
@@ -361,15 +377,18 @@ func (x *SubscribeRequest) GetLastSeenVersion() string {
 	return ""
 }
 
-var File_controlplane_cmd_controlplane_proto protoreflect.FileDescriptor
+var File_controlplane_proto protoreflect.FileDescriptor
 
-const file_controlplane_cmd_controlplane_proto_rawDesc = "" +
+const file_controlplane_proto_rawDesc = "" +
 	"\n" +
-	"#controlplane/cmd/controlplane.proto\x12\fcontrolplane\x1a\x1fgoogle/protobuf/timestamp.proto\"\x80\x01\n" +
+	"\x12controlplane.proto\x12\fcontrolplane\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb3\x01\n" +
 	"\aService\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
 	"\x06routes\x18\x02 \x03(\v2\x13.controlplane.RouteR\x06routes\x124\n" +
-	"\tendpoints\x18\x03 \x03(\v2\x16.controlplane.EndpointR\tendpoints\"5\n" +
+	"\tendpoints\x18\x03 \x03(\v2\x16.controlplane.EndpointR\tendpoints\x12\x1d\n" +
+	"\n" +
+	"cluster_ip\x18\x04 \x01(\tR\tclusterIp\x12\x12\n" +
+	"\x04port\x18\x05 \x01(\x05R\x04port\"5\n" +
 	"\x05Route\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
 	"\amethods\x18\x02 \x03(\tR\amethods\"$\n" +
@@ -391,19 +410,19 @@ const file_controlplane_cmd_controlplane_proto_rawDesc = "" +
 	"\tSubscribe\x12\x1e.controlplane.SubscribeRequest\x1a\x14.controlplane.Config0\x01B\x1bZ\x19controlplane/cmd/configpbb\x06proto3"
 
 var (
-	file_controlplane_cmd_controlplane_proto_rawDescOnce sync.Once
-	file_controlplane_cmd_controlplane_proto_rawDescData []byte
+	file_controlplane_proto_rawDescOnce sync.Once
+	file_controlplane_proto_rawDescData []byte
 )
 
-func file_controlplane_cmd_controlplane_proto_rawDescGZIP() []byte {
-	file_controlplane_cmd_controlplane_proto_rawDescOnce.Do(func() {
-		file_controlplane_cmd_controlplane_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_controlplane_cmd_controlplane_proto_rawDesc), len(file_controlplane_cmd_controlplane_proto_rawDesc)))
+func file_controlplane_proto_rawDescGZIP() []byte {
+	file_controlplane_proto_rawDescOnce.Do(func() {
+		file_controlplane_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_controlplane_proto_rawDesc), len(file_controlplane_proto_rawDesc)))
 	})
-	return file_controlplane_cmd_controlplane_proto_rawDescData
+	return file_controlplane_proto_rawDescData
 }
 
-var file_controlplane_cmd_controlplane_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
-var file_controlplane_cmd_controlplane_proto_goTypes = []any{
+var file_controlplane_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_controlplane_proto_goTypes = []any{
 	(*Service)(nil),               // 0: controlplane.Service
 	(*Route)(nil),                 // 1: controlplane.Route
 	(*Endpoint)(nil),              // 2: controlplane.Endpoint
@@ -412,7 +431,7 @@ var file_controlplane_cmd_controlplane_proto_goTypes = []any{
 	(*SubscribeRequest)(nil),      // 5: controlplane.SubscribeRequest
 	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
 }
-var file_controlplane_cmd_controlplane_proto_depIdxs = []int32{
+var file_controlplane_proto_depIdxs = []int32{
 	1, // 0: controlplane.Service.routes:type_name -> controlplane.Route
 	2, // 1: controlplane.Service.endpoints:type_name -> controlplane.Endpoint
 	0, // 2: controlplane.Config.services:type_name -> controlplane.Service
@@ -427,26 +446,26 @@ var file_controlplane_cmd_controlplane_proto_depIdxs = []int32{
 	0, // [0:5] is the sub-list for field type_name
 }
 
-func init() { file_controlplane_cmd_controlplane_proto_init() }
-func file_controlplane_cmd_controlplane_proto_init() {
-	if File_controlplane_cmd_controlplane_proto != nil {
+func init() { file_controlplane_proto_init() }
+func file_controlplane_proto_init() {
+	if File_controlplane_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_cmd_controlplane_proto_rawDesc), len(file_controlplane_cmd_controlplane_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_proto_rawDesc), len(file_controlplane_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_controlplane_cmd_controlplane_proto_goTypes,
-		DependencyIndexes: file_controlplane_cmd_controlplane_proto_depIdxs,
-		MessageInfos:      file_controlplane_cmd_controlplane_proto_msgTypes,
+		GoTypes:           file_controlplane_proto_goTypes,
+		DependencyIndexes: file_controlplane_proto_depIdxs,
+		MessageInfos:      file_controlplane_proto_msgTypes,
 	}.Build()
-	File_controlplane_cmd_controlplane_proto = out.File
-	file_controlplane_cmd_controlplane_proto_goTypes = nil
-	file_controlplane_cmd_controlplane_proto_depIdxs = nil
+	File_controlplane_proto = out.File
+	file_controlplane_proto_goTypes = nil
+	file_controlplane_proto_depIdxs = nil
 }

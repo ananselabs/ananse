@@ -31,6 +31,8 @@ type Route struct {
 // Per-service routing state
 type ServiceRouting struct {
 	Name      string
+	ClusterIP string // Kubernetes Service ClusterIP
+	Port      int    // Service port
 	Routes    []Route
 	Endpoints []Endpoint
 }
@@ -39,6 +41,7 @@ type ServiceRouting struct {
 type RoutingTable struct {
 	Services  map[string]*ServiceRouting
 	pathIndex map[string]map[string]string
+	vipIndex  map[string]string // "ClusterIP:port" -> service name
 }
 
 type ConfigClient struct {
@@ -291,6 +294,8 @@ func buildRoutingTable(cfg *pb.Config) (*RoutingTable, error) {
 
 		rt.Services[name] = &ServiceRouting{
 			Name:      name,
+			ClusterIP: svc.GetClusterIp(),
+			Port:      int(svc.GetPort()),
 			Routes:    routes,
 			Endpoints: endpoints,
 		}
