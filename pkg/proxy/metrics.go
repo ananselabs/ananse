@@ -6,6 +6,56 @@ import (
 )
 
 var (
+	// Sidecar connection metrics
+	sidecarConnectionsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ananse_sidecar_connections_total",
+			Help: "Total number of connections handled by sidecar",
+		},
+		[]string{"direction", "protocol"},
+	)
+
+	sidecarConnectionsActive = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ananse_sidecar_connections_active",
+			Help: "Current number of active connections",
+		},
+		[]string{"direction"},
+	)
+
+	sidecarBytesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ananse_sidecar_bytes_total",
+			Help: "Total bytes transferred through sidecar",
+		},
+		[]string{"direction"},
+	)
+
+	sidecarRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "ananse_sidecar_request_duration_seconds",
+			Help:    "Request duration in seconds",
+			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+		},
+		[]string{"direction", "status"},
+	)
+
+	sidecarTLSHandshakes = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ananse_sidecar_tls_handshakes_total",
+			Help: "Total TLS handshakes",
+		},
+		[]string{"result"},
+	)
+
+	sidecarConnectionsByTLS = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ananse_sidecar_connections_by_tls_total",
+			Help: "Total connections by TLS mode (mtls or plain)",
+		},
+		[]string{"tls_mode"},
+	)
+
 	// HTTP Request metrics
 	httpRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -111,4 +161,33 @@ func RecordBackendFailure(backend string) {
 
 func RecordRetryAttempt(backend string) {
 	retryAttemptsTotal.WithLabelValues(backend).Inc()
+}
+
+// Sidecar metrics helpers
+func RecordSidecarConnection(direction, protocol string) {
+	sidecarConnectionsTotal.WithLabelValues(direction, protocol).Inc()
+}
+
+func RecordSidecarConnectionStart(direction string) {
+	sidecarConnectionsActive.WithLabelValues(direction).Inc()
+}
+
+func RecordSidecarConnectionEnd(direction string) {
+	sidecarConnectionsActive.WithLabelValues(direction).Dec()
+}
+
+func RecordSidecarBytes(direction string, bytes int64) {
+	sidecarBytesTotal.WithLabelValues(direction).Add(float64(bytes))
+}
+
+func RecordSidecarDuration(direction, status string, duration float64) {
+	sidecarRequestDuration.WithLabelValues(direction, status).Observe(duration)
+}
+
+func RecordTLSHandshake(result string) {
+	sidecarTLSHandshakes.WithLabelValues(result).Inc()
+}
+
+func RecordConnectionByTLS(tlsMode string) {
+	sidecarConnectionsByTLS.WithLabelValues(tlsMode).Inc()
 }

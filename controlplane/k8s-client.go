@@ -168,9 +168,9 @@ func (k *K8sClient) buildConfig() *pb.Config {
 			continue
 		}
 
-		//if svc.Labels["ananse/enabled"] != "true" {
-		//	continue
-		//}
+		if svc.Labels["ananse.io/mesh"] != "enabled" {
+			continue
+		}
 
 		endpoints := k.buildEndpoints(svc.Namespace, svc.Name)
 		if len(endpoints) == 0 {

@@ -11,5 +11,5 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /server ./proxy/main.go
 
 FROM alpine:latest
 WORKDIR /root/
-COPY --from=builder /server .
-CMD ["./server"]
+COPY --from=builder /server /server
+CMD ["/server"]

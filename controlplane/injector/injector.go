@@ -29,6 +29,7 @@ var (
 	ProxyUID             = int64(getEnvInt("PROXY_UID", 1337))
 	ControlPlaneEndpoint = getEnv("CONTROL_PLANE_ENDPOINT", "ananse-controlplane.ananse-system.svc:50051")
 	DebugMode            = getEnv("DEBUG_MODE", "false") == "true"
+	mtlsEnabled          = "false"
 	IgnoredNamespaces    = []string{
 		metav1.NamespaceSystem, // "kube-system"
 		metav1.NamespacePublic, // "kube-public"
@@ -206,6 +207,10 @@ func injectRequired(pod *corev1.Pod, ns string) bool {
 // -----------------------------------------------------------------------------
 
 func injectSidecar(pod *corev1.Pod) {
+	if pod.Annotations["sidecar.ananse.io/mtls"] == "true" {
+		mtlsEnabled = "true"
+	}
+
 	// A. Init Container (Sets up iptables)
 	initContainer := corev1.Container{
 		Name:            "ananse-init",
@@ -241,6 +246,7 @@ func injectSidecar(pod *corev1.Pod) {
 			{Name: "inbound", ContainerPort: 15006, Protocol: corev1.ProtocolTCP},
 		},
 		SecurityContext: func() *corev1.SecurityContext {
+
 			if DebugMode {
 				// Debug mode: minimal restrictions for Delve
 				return &corev1.SecurityContext{
@@ -264,8 +270,11 @@ func injectSidecar(pod *corev1.Pod) {
 				},
 			}
 		}(),
+
 		Env: []corev1.EnvVar{
 			{Name: "ANANSE_MODE", Value: "sidecar"},
+			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "otel-collector.monitoring.svc.cluster.local:4317"},
+			{Name: "ANANSE_MTLS_ENABLED", Value: mtlsEnabled},
 			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			}},
@@ -287,6 +296,17 @@ func injectSidecar(pod *corev1.Pod) {
 				corev1.ResourceMemory: resource.MustParse("128Mi"),
 			},
 		},
+	}
+
+	// Add cert volume mount if mTLS enabled
+	if mtlsEnabled == "true" {
+		sidecarContainer.VolumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "ananse-mesh-certs",
+				MountPath: "/etc/ananse/certs",
+				ReadOnly:  true,
+			},
+		}
 	}
 
 	// Only add probes in production mode (debug mode waits for debugger)
@@ -311,7 +331,19 @@ func injectSidecar(pod *corev1.Pod) {
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, initContainer)
 	pod.Spec.Containers = append(pod.Spec.Containers, sidecarContainer)
 
-	// D. Add Annotation to track injection status
+	// D. Add mesh cert volume if mTLS enabled
+	if mtlsEnabled == "true" {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: "ananse-mesh-certs",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: "ananse-mesh-certs",
+				},
+			},
+		})
+	}
+
+	// E. Add Annotation to track injection status
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}

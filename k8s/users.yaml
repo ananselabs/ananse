@@ -15,6 +15,9 @@ spec:
       labels:
         app: users
         app.kubernetes.io/part-of: ananse-mesh
+      annotations:
+        sidecar.ananse.io/inject: "true"
+        sidecar.ananse.io/mtls: "true"
     spec:
       containers:
       - name: users

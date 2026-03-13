@@ -14,9 +14,21 @@ import (
 )
 
 var (
-	serviceName  = os.Getenv("OTEL_SERVICE_NAME")
+	serviceName  = getServiceName()
 	collectorURL = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 )
+
+func getServiceName() string {
+	// SERVICE_NAME is set by injector from pod's app label
+	if name := os.Getenv("SERVICE_NAME"); name != "" {
+		return name
+	}
+	// Fallback to OTEL standard env var
+	if name := os.Getenv("OTEL_SERVICE_NAME"); name != "" {
+		return name
+	}
+	return ""
+}
 
 func InitTracer() func(context.Context) error {
 	if serviceName == "" {
@@ -65,6 +77,7 @@ func InitTracer() func(context.Context) error {
 	// Add error handler to surface hidden errors
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
 		Logger.Error("OTel export error", zap.Error(err))
+		Logger.Info("collector-url", zap.String("collector url", collectorURL))
 	}))
 
 	Logger.Info("OpenTelemetry initialized",

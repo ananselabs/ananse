@@ -1,10 +1,9 @@
 #!/bin/sh
 set -e
 
-PROXY_UID="${PROXY_UID:-1337}" 
-PROXY_INBOUND_PORT=15006
-PROXY_OUTBOUND_PORT=15001
-APP_HEALTH_PORT=8080
+PROXY_UID="${PROXY_UID:-1337}"
+PROXY_INBOUND_PORT="${INBOUND_PORT:-15006}"
+PROXY_OUTBOUND_PORT="${PROXY_PORT:-15001}"
 KUBE_API_IP="${KUBERNETES_SERVICE_HOST:-10.96.0.1}"
 
 # Create chains
@@ -12,9 +11,11 @@ iptables -t nat -N ANANSE_PROXY_INBOUND
 iptables -t nat -N ANANSE_PROXY_OUTBOUND
 
 # == INBOUND (PREROUTING - external traffic entering pod) ==
-# Exclusions first (order matters: checked top-to-bottom)
-iptables -t nat -A ANANSE_PROXY_INBOUND -p tcp --dport $APP_HEALTH_PORT -j RETURN # K8s probes
-iptables -t nat -A ANANSE_PROXY_INBOUND -p tcp --dport $PROXY_INBOUND_PORT -j RETURN # dont redirect proxy port
+# Don't redirect traffic already destined for proxy port
+iptables -t nat -A ANANSE_PROXY_INBOUND -p tcp --dport $PROXY_INBOUND_PORT -j RETURN
+
+# Don't redirect admin port (metrics, health checks)
+iptables -t nat -A ANANSE_PROXY_INBOUND -p tcp --dport 15021 -j RETURN
 
 # Redirect everything else to inbound listener
 iptables -t nat -A ANANSE_PROXY_INBOUND -p tcp -j REDIRECT --to-ports $PROXY_INBOUND_PORT

@@ -4,6 +4,9 @@ package proxy
 import (
 	"errors"
 	"sync"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 type LoadBalancer struct {
@@ -45,15 +48,12 @@ func (lb *LoadBalancer) GetNextPeer(service string) (*Backend, error) {
 func (lb *LoadBalancer) getNextRoundRobin(service string) *Backend {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	if service == "" {
-		return nil
-	}
+
 	backends, ok := lb.pool.GetBackendsForService(service)
 	if !ok || len(backends) == 0 {
 		return nil
 	}
 
-	// Initialize cursor for this service if missing
 	if _, exists := lb.rrIndices[service]; !exists {
 		lb.rrIndices[service] = 0
 	}
@@ -62,8 +62,17 @@ func (lb *LoadBalancer) getNextRoundRobin(service string) *Backend {
 	for i := 0; i < len(backends); i++ {
 		idx := (start + i) % len(backends)
 		b := backends[idx]
-		if b.IsHealthy() {
-			lb.rrIndices[service] = (idx + 1) % len(backends)
+
+		shouldCheck, state := lb.pool.GetCircuitState(service, b.Name, 10*time.Second)
+
+		if !shouldCheck {
+			Logger.Info("skipping backend (circuit open)",
+				zap.String("backend", b.Name),
+				zap.String("state", string(state)))
+			continue
+		}
+
+		if b.IsHealthy() && shouldCheck {
 			return b
 		}
 	}
@@ -79,9 +88,13 @@ func (lb *LoadBalancer) getNextLeastConnection(service string) (*Backend, error)
 
 	var least *Backend
 	for _, b := range backends {
-		if !b.IsHealthy() {
+		// ✅ Check BOTH health AND circuit state
+		shouldCheck, _ := lb.pool.GetCircuitState(service, b.Name, 10*time.Second)
+
+		if !b.IsHealthy() || !shouldCheck {
 			continue
 		}
+
 		if least == nil || b.GetActiveRequests() < least.GetActiveRequests() {
 			least = b
 		}
@@ -90,6 +103,5 @@ func (lb *LoadBalancer) getNextLeastConnection(service string) (*Backend, error)
 	if least == nil {
 		return nil, errors.New("no healthy backends")
 	}
-
 	return least, nil
 }

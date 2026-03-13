@@ -6,7 +6,7 @@ metadata:
   labels:
     app: analytics
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: analytics
@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/part-of: ananse-mesh
       annotations:
         sidecar.ananse.io/inject: "true"
+        sidecar.ananse.io/mtls: "true"
     spec:
       containers:
       - name: analytics
@@ -30,6 +31,8 @@ spec:
         env:
         - name: PORT
           value: "5004"
+        - name: ANANSE_MTLS_ENABLED
+          value: "true"
         livenessProbe:
           httpGet:
             path: /health

@@ -3,15 +3,20 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -23,16 +28,21 @@ import (
 const (
 	OutboundPort = ":15001"
 	InboundPort  = ":15006"
+	AdminPort    = ":15021"
 	http2Preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 )
+
+var sidecarReady atomic.Bool
 
 var httpMethods = []string{"GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH "}
 
 type SideCarProxyState struct {
-	lb     *LoadBalancer
-	pool   *BackendPool
-	health *Health
-	router *Router
+	lb          *LoadBalancer
+	pool        *BackendPool
+	health      *Health
+	router      *Router
+	tlsConfig   *tls.Config
+	certWatcher *CertWatcher
 }
 
 func NewSideCarProxyState(router *Router, lb *LoadBalancer, pool *BackendPool, health *Health) *SideCarProxyState {
@@ -58,15 +68,89 @@ func (rw readWriter) CloseWrite() error {
 	return nil
 }
 
+// startAdminServer starts the admin HTTP server for metrics and health checks
+func startAdminServer(ctx context.Context) *http.Server {
+	mux := http.NewServeMux()
+
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.Handler())
+
+	// Liveness probe - always healthy if process is running
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	// Readiness probe - healthy when listeners are up
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if sidecarReady.Load() {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ready"))
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("not ready"))
+		}
+	})
+
+	server := &http.Server{
+		Addr:    AdminPort,
+		Handler: mux,
+	}
+
+	go func() {
+		Logger.Info("admin server started", zap.String("port", AdminPort))
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			Logger.Error("admin server error", zap.Error(err))
+		}
+	}()
+
+	return server
+}
+
 // StartSidecarProxy starts both inbound and outbound listeners
 func StartSidecarProxy(state *ProxyState, shutdownCh chan os.Signal, ctx context.Context, cancel context.CancelFunc) {
 	sidecarProxy := NewSideCarProxyState(state.Router, state.LoadBalancer, state.BackendPool, state.Health)
 
+	// Start admin server for metrics/health
+	adminServer := startAdminServer(ctx)
+	defer adminServer.Shutdown(context.Background())
+
 	Logger.Info("sidecar proxy started",
 		zap.String("outbound", OutboundPort),
-		zap.String("inbound", InboundPort))
+		zap.String("inbound", InboundPort),
+		zap.String("admin", AdminPort))
+
+	mtlsEnabled := os.Getenv("ANANSE_MTLS_ENABLED")
+
+	if mtlsEnabled == "true" {
+		certDir := os.Getenv("ANANSE_CERT_PATH")
+		if certDir == "" {
+			certDir = "/etc/ananse/certs"
+		}
+
+		certWatcher, err := NewCertWatcher(certDir)
+		if err != nil {
+			Logger.Fatal("failed to initialize cert watcher", zap.Error(err))
+		}
+		sidecarProxy.certWatcher = certWatcher
+		certWatcher.Start()
+
+		Logger.Info("mTLS enabled with automatic cert reload",
+			zap.String("cert_dir", certDir))
+	} else {
+		Logger.Warn("mTLS disabled, connections are insecure")
+	}
+
 	go sidecarProxy.startInboundListener()
 	go sidecarProxy.startOutboundListener()
+
+	// Mark ready after listeners start
+	sidecarReady.Store(true)
+
 	select {
 	case sig := <-shutdownCh:
 		Logger.Info("signal received, shutting down", zap.String("signal", sig.String()))
@@ -75,7 +159,6 @@ func StartSidecarProxy(state *ProxyState, shutdownCh chan os.Signal, ctx context
 	}
 	// 3. Perform cleanup
 	cancel()
-	// If your sidecarProxy has a .Stop() method, call it here
 	Logger.Info("sidecar proxy stopped")
 
 }
@@ -114,9 +197,11 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 	defer clientConn.Close()
 	RecordRequestStart()
 	defer RecordRequestEnd()
+	RecordSidecarConnectionStart("outbound")
+	defer RecordSidecarConnectionEnd("outbound")
 	_ = clientConn.SetNoDelay(true)
 
-	startTime := time.Now() // ← Add this
+	startTime := time.Now()
 
 	Logger.Info("receiving outbound traffic")
 
@@ -134,6 +219,7 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 	header, _ := reader.Peek(24) // ← Peek more bytes for HTTP
 	clientConn.SetReadDeadline(time.Time{})
 	prtDetect := spx.detectProtocol(header)
+	RecordSidecarConnection("outbound", prtDetect)
 
 	var targetRW readWriter
 
@@ -226,21 +312,53 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 			// D2. DIAL SELECTED BACKEND
 			_, dialSpan := otel.Tracer("ananse").Start(ctx, "proxy.dial_backend",
 				trace.WithAttributes(
-					attribute.String("peer.address", backend.TargetUrl.Host), // ✅ Host:port
+					attribute.String("peer.address", backend.TargetUrl.Host),
 				),
 			)
 
 			backend.IncrementActiveRequests()
-
 			dialer := net.Dialer{Timeout: 2 * time.Second}
-			targetConn, err = dialer.Dial("tcp", backend.TargetUrl.Host)
+
+			if spx.certWatcher != nil { // ← mTLS enabled
+				tlsConfig := spx.certWatcher.GetConfig() // ← Get current config
+				// Skip server cert verification (pod IPs don't match DNS SANs)
+				// mTLS client cert still provides mutual authentication
+				tlsConfig.InsecureSkipVerify = true
+				tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+					certs := make([]*x509.Certificate, len(rawCerts))
+					for i, raw := range rawCerts {
+						cert, err := x509.ParseCertificate(raw)
+						if err != nil {
+							return err
+						}
+						certs[i] = cert
+					}
+
+					// Verify cert is signed by our CA (not expired, valid chain)
+					opts := x509.VerifyOptions{
+						Roots:         spx.certWatcher.GetCAPool(),
+						Intermediates: x509.NewCertPool(),
+					}
+					_, err := certs[0].Verify(opts)
+					return err
+				}
+
+				targetConn, err = tls.DialWithDialer(&dialer, "tcp", backend.TargetUrl.Host, tlsConfig)
+			} else { // Plain TCP
+				targetConn, err = dialer.Dial("tcp", backend.TargetUrl.Host)
+			}
+
 			if err != nil {
-				backend.DecrementActiveRequests() // Cleanup failed attempt
+				backend.DecrementActiveRequests()
 				dialSpan.RecordError(err)
 				dialSpan.SetStatus(codes.Error, err.Error())
 				dialSpan.End()
 
-				Logger.Error("failed to dial backend", zap.Error(err), zap.String("backend", backend.Name))
+				Logger.Error("failed to dial backend",
+					zap.Error(err),
+					zap.String("backend", backend.Name),
+				)
+
 				RecordBackendFailure(backend.Name)
 				spx.pool.UpdateBackendStatus(serviceName, backend.Name, false, spx.health.GetHealthCheckInterval())
 
@@ -272,7 +390,7 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 			_, forwardSpan := otel.Tracer("ananse").Start(ctx, "proxy.forward_request",
 				trace.WithAttributes(
 					attribute.String("peer.service", serviceName),
-					attribute.String("peer.address", backend.TargetUrl.Host), // ✅
+					attribute.String("peer.address", backend.TargetUrl.Host),
 				),
 			)
 
@@ -385,6 +503,7 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 		resp.Body.Close()
 
 		Logger.Info("outbound response successful")
+		RecordSidecarDuration("outbound", strconv.Itoa(resp.StatusCode), time.Since(startTime).Seconds())
 
 		// Skip bidirectional for health checks
 		if req.URL.Path == "/health" || req.URL.Path == "/healthz" || req.URL.Path == "/ready" {
@@ -428,11 +547,32 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 // =====================================================================
 
 func (spx *SideCarProxyState) startInboundListener() {
+	if spx.certWatcher == nil {
+		// Plain TCP listener (no mTLS)
+		ln, err := net.Listen("tcp", InboundPort)
+		if err != nil {
+			Logger.Fatal("failed to start inbound listener", zap.Error(err))
+		}
+		Logger.Info("inbound listener started (no mTLS)", zap.String("port", InboundPort))
+
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				Logger.Error("failed to accept inbound connection", zap.Error(err))
+				continue
+			}
+			go spx.handleInboundConnection(conn)
+		}
+		return
+	}
+
+	// mTLS listener with permissive mode (handles both TLS and plain TCP)
 	ln, err := net.Listen("tcp", InboundPort)
 	if err != nil {
 		Logger.Fatal("failed to start inbound listener", zap.Error(err))
 	}
-	Logger.Info("inbound listener started", zap.String("port", InboundPort))
+
+	Logger.Info("inbound mTLS listener started (permissive mode)", zap.String("port", InboundPort))
 
 	for {
 		conn, err := ln.Accept()
@@ -441,33 +581,115 @@ func (spx *SideCarProxyState) startInboundListener() {
 			continue
 		}
 
-		tcpConn, ok := conn.(*net.TCPConn)
-		if !ok {
-			Logger.Error("not a TCP connection")
-			conn.Close()
-			continue
-		}
-
-		go spx.handleInboundConnection(tcpConn)
+		go spx.handleInboundWithDetection(conn)
 	}
 }
 
-func (spx *SideCarProxyState) handleInboundConnection(clientConn *net.TCPConn) {
+// handleInboundWithDetection peeks at first bytes to detect TLS vs plain TCP
+func (spx *SideCarProxyState) handleInboundWithDetection(conn net.Conn) {
+	// Peek first 1 byte to detect TLS
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	header := make([]byte, 1)
+	n, err := conn.Read(header)
+	conn.SetReadDeadline(time.Time{})
+
+	if err != nil || n == 0 {
+		Logger.Error("failed to peek connection", zap.Error(err))
+		conn.Close()
+		return
+	}
+
+	// Get underlying TCP conn for original destination lookup
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		Logger.Error("not a TCP connection")
+		conn.Close()
+		return
+	}
+
+	// TLS record starts with 0x16 (handshake)
+	if header[0] == 0x16 {
+		// TLS connection - wrap and do mTLS handshake
+		replayConn := &replayConn{Conn: conn, buf: header, tcpConn: tcpConn}
+
+		tlsConfig := spx.certWatcher.GetConfig()
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		tlsConfig.MinVersion = tls.VersionTLS12
+
+		tlsConn := tls.Server(replayConn, tlsConfig)
+		if err := tlsConn.Handshake(); err != nil {
+			Logger.Warn("mTLS handshake failed, closing", zap.Error(err))
+			RecordTLSHandshake("failed")
+			conn.Close()
+			return
+		}
+		RecordTLSHandshake("success")
+		RecordConnectionByTLS("mtls")
+		spx.handleInboundConnection(tlsConn)
+	} else {
+		// Plain TCP (likely health probe) - proxy without TLS
+		RecordConnectionByTLS("plain")
+		replayConn := &replayConn{Conn: conn, buf: header, tcpConn: tcpConn}
+		spx.handleInboundConnection(replayConn)
+	}
+}
+
+// replayConn replays buffered bytes before reading from underlying conn
+type replayConn struct {
+	net.Conn
+	buf     []byte
+	tcpConn *net.TCPConn
+}
+
+func (r *replayConn) Read(p []byte) (int, error) {
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	return r.Conn.Read(p)
+}
+
+// TCPConn returns the underlying TCP connection for SO_ORIGINAL_DST
+func (r *replayConn) TCPConn() *net.TCPConn {
+	return r.tcpConn
+}
+
+func (spx *SideCarProxyState) handleInboundConnection(clientConn net.Conn) {
+	startTime := time.Now()
 	RecordRequestStart()
 	defer RecordRequestEnd()
+	RecordSidecarConnectionStart("inbound")
+	defer RecordSidecarConnectionEnd("inbound")
 	defer clientConn.Close()
-	_ = clientConn.SetNoDelay(true)
+
 	if Logger == nil {
 		InitLogger()
 	}
 
-	type dialResult struct {
-		conn net.Conn
-		err  error
+	// get original destination
+	var tcpConn *net.TCPConn
+	if tc, ok := clientConn.(*net.TCPConn); ok {
+		tcpConn = tc
+	} else if tc, ok := clientConn.(*tls.Conn); ok {
+		// Check if underlying is replayConn
+		if rc, ok := tc.NetConn().(*replayConn); ok {
+			tcpConn = rc.TCPConn()
+		} else {
+			tcpConn = tc.NetConn().(*net.TCPConn)
+		}
+	} else if rc, ok := clientConn.(*replayConn); ok {
+		tcpConn = rc.TCPConn()
 	}
-	dialChan := make(chan dialResult, 1)
-
-	origDst, err := getOriginalDst(clientConn)
+	if tcpConn == nil {
+		Logger.Error("failed to get TCP connection for original dest")
+		return
+	}
+	origDst, err := getOriginalDst(tcpConn)
+	var state tls.ConnectionState
+	if tlsConn, ok := clientConn.(*tls.Conn); ok {
+		state = tlsConn.ConnectionState()
+	}
 	if err != nil {
 		Logger.Error("failed to get original destination", zap.Error(err))
 		return
@@ -478,40 +700,34 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn *net.TCPConn) {
 		Logger.Error("failed to parse original destination", zap.Error(err))
 		return
 	}
+
+	// connect to LOCAL application (no TLS)
 	target := net.JoinHostPort("127.0.0.1", port)
 
-	go func() {
-		dialer := net.Dialer{Timeout: 2 * time.Second}
-		conn, err := dialer.Dial("tcp", target)
-		dialChan <- dialResult{conn: conn, err: err}
-	}()
-
-	// peek while dialing to hide latency
-	reader := bufio.NewReader(clientConn)
-	header, _ := reader.Peek(24)
-	prtDetect := spx.detectProtocol(header)
-
-	result := <-dialChan
-	if result.err != nil {
-		Logger.Error("failed to dial app", zap.Error(result.err))
+	targetConn, err := net.DialTimeout("tcp", target, 2*time.Second)
+	if err != nil {
+		Logger.Error("failed to dial local app", zap.Error(err))
 		return
 	}
-	targetConn := result.conn
 	defer targetConn.Close()
-	if tc, ok := targetConn.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-	}
 
-	// build readWriters — initialized here so both branches can assign targetRW
+	reader := bufio.NewReader(clientConn)
+	header, _ := reader.Peek(24)
+
+	prtDetect := spx.detectProtocol(header)
+	RecordSidecarConnection("inbound", prtDetect)
+
 	rw := readWriter{
 		Reader: reader,
 		Writer: clientConn,
-		conn:   clientConn,
 	}
+
 	var targetRW readWriter
 
 	switch prtDetect {
+
 	case "HTTP":
+
 		req, err := http.ReadRequest(reader)
 		if err != nil {
 			Logger.Error("failed to read HTTP request", zap.Error(err))
@@ -522,79 +738,61 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn *net.TCPConn) {
 			req.Context(),
 			propagation.HeaderCarrier(req.Header),
 		)
+
 		ctx, span := otel.Tracer("ananse").Start(ctx, "proxy.handle_request",
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(
 				attribute.String("http.method", req.Method),
 				attribute.String("http.url", req.URL.Path),
-				attribute.String("http.host", req.Host),
 			),
 		)
-		Logger.Info("span created", zap.String("traceID", span.SpanContext().TraceID().String()))
+		if len(state.PeerCertificates) > 0 {
+			span.SetAttributes(attribute.String("client.identity", state.PeerCertificates[0].Subject.CommonName))
+		}
 		defer span.End()
 
-		// inject span context into forwarded request so upstream can attach to this trace
 		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
-		Logger.Info("HTTP match", zap.String("path", req.URL.Path))
 
 		requestStart := time.Now()
+
 		if err := req.Write(targetConn); err != nil {
 			Logger.Error("failed to forward HTTP request", zap.Error(err))
-			span.SetAttributes(attribute.String("error", err.Error()))
 			return
 		}
+
 		req.Body.Close()
 
-		// intercept response for observability before forwarding to client
 		targetReader := bufio.NewReader(targetConn)
+
 		resp, err := http.ReadResponse(targetReader, req)
 		if err != nil {
 			Logger.Error("failed to read HTTP response", zap.Error(err))
-			span.SetAttributes(attribute.String("error", err.Error()))
 			return
 		}
 
 		span.SetAttributes(
 			attribute.Int("http.status_code", resp.StatusCode),
-			attribute.Float64("req.duration", time.Since(requestStart).Seconds()),
-		)
-		Logger.Info("HTTP response",
-			zap.Int("status", resp.StatusCode),
-			zap.Float64("duration_s", time.Since(requestStart).Seconds()),
+			attribute.Float64("duration", time.Since(requestStart).Seconds()),
 		)
 
 		if err := resp.Write(clientConn); err != nil {
-			Logger.Error("failed to write HTTP response to client", zap.Error(err))
-			span.SetAttributes(attribute.String("error", err.Error()))
-			return
-		}
-		if err := resp.Body.Close(); err != nil {
-			Logger.Error("failed to close response body", zap.Error(err))
-			span.SetAttributes(attribute.String("error", err.Error()))
+			Logger.Error("failed to write response", zap.Error(err))
 			return
 		}
 
-		Logger.Info("Response successful", zap.String("connection", clientConn.RemoteAddr().String()))
+		resp.Body.Close()
+		RecordSidecarDuration("inbound", strconv.Itoa(resp.StatusCode), time.Since(startTime).Seconds())
 
-		// Health checks are single request/response - skip bidirectional proxy
-		if req.URL.Path == "/health" || req.URL.Path == "/healthz" || req.URL.Path == "/ready" {
-			return
-		}
-
-		// targetReader may have buffered bytes (keepalive / pipelined requests)
-		// so wrap it rather than using targetConn directly
 		targetRW = readWriter{
 			Reader: targetReader,
 			Writer: targetConn,
-			conn:   targetConn.(*net.TCPConn),
 		}
 
 	default:
-		Logger.Info("proxying protocol", zap.String("proto", prtDetect))
+
 		targetRW = readWriter{
 			Reader: bufio.NewReader(targetConn),
 			Writer: targetConn,
-			conn:   targetConn.(*net.TCPConn),
 		}
 	}
 
@@ -671,4 +869,25 @@ func (spx *SideCarProxyState) detectProtocol(peeked []byte) string {
 	}
 
 	return "RAW_TCP"
+}
+
+func LoadMTLSConfig() *tls.Config {
+	clientCert, err := tls.LoadX509KeyPair("client.crt", "client.key")
+	if err != nil {
+		panic(err)
+	}
+
+	caCert, err := ioutil.ReadFile("ca.crt")
+	if err != nil {
+		panic(err)
+	}
+
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(caCert)
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caPool,
+		MinVersion:   tls.VersionTLS12,
+	}
 }

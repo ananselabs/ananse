@@ -29,8 +29,10 @@ spec:
         env:
           - name: ANANSE_MODE
             value: "sidecar"
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "otel-collector.monitoring.svc.cluster.local:4317"
       - name: controlplane
-        image: anthony4m/ananse-controlplane:v1
+        image: controlplane:latest
         imagePullPolicy: IfNotPresent
         args: ["--k8s"]
         ports:
@@ -38,10 +40,16 @@ spec:
         volumeMounts:
         - name: config-volume
           mountPath: /root/config
+        - name: webhook-certs
+          mountPath: /etc/webhook/certs
+          readOnly: true
       volumes:
       - name: config-volume
         configMap:
           name: ananse-config
+      - name: webhook-certs
+        secret:
+          secretName: ananse-webhook-certs
 ---
 apiVersion: v1
 kind: Service
@@ -63,4 +71,8 @@ spec:
       protocol: TCP
       port: 9090
       targetPort: 9090
+    - name: webhook
+      protocol: TCP
+      port: 443
+      targetPort: 8443
   type: LoadBalancer
