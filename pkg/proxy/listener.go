@@ -54,11 +54,16 @@ func NewSideCarProxyState(router *Router, lb *LoadBalancer, pool *BackendPool, h
 	}
 }
 
+// closeWriter is an interface for connections that support half-close
+type closeWriter interface {
+	CloseWrite() error
+}
+
 // dont mind me, i needed a way to pass the reader into the function as a readwriter
 type readWriter struct {
 	io.Reader
 	io.Writer
-	conn *net.TCPConn
+	conn closeWriter // Can be *net.TCPConn or *tls.Conn
 }
 
 func (rw readWriter) CloseWrite() error {
@@ -96,6 +101,11 @@ func startAdminServer(ctx context.Context) *http.Server {
 		}
 	})
 
+	// App health proxy - forwards health checks to the local app container
+	// Path format: /app-health/{port}/{path...}
+	// Example: /app-health/8080/health -> localhost:8080/health
+	mux.HandleFunc("/app-health/", handleAppHealthProxy)
+
 	server := &http.Server{
 		Addr:    AdminPort,
 		Handler: mux,
@@ -111,9 +121,154 @@ func startAdminServer(ctx context.Context) *http.Server {
 	return server
 }
 
+// probeConfigCache caches probe configurations read from annotations
+var probeConfigCache = make(map[string]appHealthProbeConfig)
+
+type appHealthProbeConfig struct {
+	Port int    `json:"port"`
+	Path string `json:"path"`
+}
+
+// initProbeConfigs reads probe configurations from environment/annotations at startup
+func initProbeConfigs() {
+	// Read from environment variables set by downward API or injector
+	// Format: ANANSE_PROBE_{CONTAINER}_{TYPE}_PORT and ANANSE_PROBE_{CONTAINER}_{TYPE}_PATH
+	// Example: ANANSE_PROBE_ANALYTICS_LIVENESS_PORT=5004
+	//          ANANSE_PROBE_ANALYTICS_LIVENESS_PATH=/health
+
+	// For simplicity, we also support a single app container config via:
+	// ANANSE_LIVENESS_PORT, ANANSE_LIVENESS_PATH, etc.
+
+	serviceName := os.Getenv("SERVICE_NAME")
+	if serviceName == "" {
+		serviceName = "app"
+	}
+
+	// Check for service-specific probe configs
+	for _, probeType := range []string{"liveness", "readiness", "startup"} {
+		portEnv := fmt.Sprintf("ANANSE_%s_PORT", strings.ToUpper(probeType))
+		pathEnv := fmt.Sprintf("ANANSE_%s_PATH", strings.ToUpper(probeType))
+
+		if portStr := os.Getenv(portEnv); portStr != "" {
+			port, _ := strconv.Atoi(portStr)
+			path := os.Getenv(pathEnv)
+			if path == "" {
+				path = "/health"
+			}
+
+			key := fmt.Sprintf("%s-%s", serviceName, probeType)
+			probeConfigCache[key] = appHealthProbeConfig{Port: port, Path: path}
+			Logger.Info("probe config loaded",
+				zap.String("key", key),
+				zap.Int("port", port),
+				zap.String("path", path))
+		}
+	}
+}
+
+// handleAppHealthProxy proxies health check requests to the local app container.
+// This allows Kubernetes probes to work with strict mTLS by routing through the sidecar.
+// Path format: /app-health/{container}/{probe-type}
+// Example: /app-health/analytics/livez -> GET localhost:5004/health (from cached config)
+func handleAppHealthProxy(w http.ResponseWriter, r *http.Request) {
+	// Parse path: /app-health/{container}/{probe-type}
+	path := strings.TrimPrefix(r.URL.Path, "/app-health/")
+	parts := strings.SplitN(path, "/", 2)
+
+	if len(parts) < 2 {
+		http.Error(w, "invalid app-health path: expected /app-health/{container}/{livez|readyz|startupz}", http.StatusBadRequest)
+		return
+	}
+
+	containerName := parts[0]
+	probeEndpoint := parts[1] // livez, readyz, or startupz
+
+	// Map endpoint to probe type
+	var probeType string
+	switch probeEndpoint {
+	case "livez":
+		probeType = "liveness"
+	case "readyz":
+		probeType = "readiness"
+	case "startupz":
+		probeType = "startup"
+	default:
+		http.Error(w, fmt.Sprintf("unknown probe endpoint: %s", probeEndpoint), http.StatusBadRequest)
+		return
+	}
+
+	// Look up probe config
+	key := fmt.Sprintf("%s-%s", containerName, probeType)
+	config, ok := probeConfigCache[key]
+	if !ok {
+		// Fallback: try to parse port from query param or use default
+		portStr := r.URL.Query().Get("port")
+		pathStr := r.URL.Query().Get("path")
+
+		if portStr != "" {
+			port, _ := strconv.Atoi(portStr)
+			if pathStr == "" {
+				pathStr = "/health"
+			}
+			config = appHealthProbeConfig{Port: port, Path: pathStr}
+		} else {
+			http.Error(w, fmt.Sprintf("no probe config found for %s", key), http.StatusNotFound)
+			return
+		}
+	}
+
+	// Create request to local app
+	targetURL := fmt.Sprintf("http://127.0.0.1:%d%s", config.Port, config.Path)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to create proxy request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Copy relevant headers
+	for key, values := range r.Header {
+		for _, value := range values {
+			proxyReq.Header.Add(key, value)
+		}
+	}
+
+	// Use a short timeout for health checks
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		// App not responding - return 503
+		Logger.Debug("app health check failed",
+			zap.String("container", containerName),
+			zap.String("probe", probeType),
+			zap.Int("port", config.Port),
+			zap.String("path", config.Path),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("app health check failed: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Copy status code and body
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
 // StartSidecarProxy starts both inbound and outbound listeners
 func StartSidecarProxy(state *ProxyState, shutdownCh chan os.Signal, ctx context.Context, cancel context.CancelFunc) {
 	sidecarProxy := NewSideCarProxyState(state.Router, state.LoadBalancer, state.BackendPool, state.Health)
+
+	// Initialize probe configurations from environment
+	initProbeConfigs()
 
 	// Start admin server for metrics/health
 	adminServer := startAdminServer(ctx)
@@ -247,7 +402,8 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 				attribute.String("peer.address", target),
 			),
 		)
-		defer span.End()
+		// Note: span.End() is called explicitly after response is written, not via defer
+		// This prevents blocking on proxyBidirectional for keepalive connections
 
 		// Inject span context
 		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
@@ -256,12 +412,52 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 		_, routeSpan := otel.Tracer("ananse").Start(ctx, "proxy.route_lookup")
 		serviceName, err := spx.router.FindServiceByVIP(target)
 		if err != nil {
-			routeSpan.RecordError(err)
-			routeSpan.SetStatus(codes.Error, "route not found")
+			// Route not found - fall back to direct passthrough
+			routeSpan.SetAttributes(attribute.String("mesh.passthrough", "true"))
 			routeSpan.End()
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "route not found")
-			Logger.Error("No matching route", zap.String("target", target), zap.Error(err))
+			span.SetAttributes(attribute.String("mesh.passthrough", "true"))
+			Logger.Info("Route not found, using passthrough", zap.String("target", target))
+
+			// Dial original destination directly
+			dialer := net.Dialer{Timeout: 2 * time.Second}
+			targetConn, dialErr := dialer.Dial("tcp", target)
+			if dialErr != nil {
+				span.RecordError(dialErr)
+				span.SetStatus(codes.Error, "passthrough dial failed")
+				span.End()
+				Logger.Error("passthrough dial failed", zap.Error(dialErr))
+				return
+			}
+			defer targetConn.Close()
+
+			// Forward request
+			if err := req.Write(targetConn); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "passthrough write failed")
+				span.End()
+				Logger.Error("passthrough write failed", zap.Error(err))
+				return
+			}
+			req.Body.Close()
+
+			// Read response
+			targetReader := bufio.NewReader(targetConn)
+			resp, err := http.ReadResponse(targetReader, req)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "passthrough read failed")
+				span.End()
+				Logger.Error("passthrough read failed", zap.Error(err))
+				return
+			}
+
+			// Write response back
+			resp.Write(clientConn)
+			span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+			span.End()
+			Logger.Info("passthrough completed",
+				zap.String("target", target),
+				zap.Int("status", resp.StatusCode))
 			return
 		}
 		routeSpan.SetAttributes(attribute.String("mesh.service", serviceName))
@@ -488,6 +684,7 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 			// All retries failed (cleanup already done in loop)
 			span.RecordError(lastErr)
 			span.SetStatus(codes.Error, "all retries failed")
+			span.End()
 			return
 		}
 
@@ -498,12 +695,24 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 		if err := resp.Write(clientConn); err != nil {
 			Logger.Error("failed to write response to client", zap.Error(err))
 			span.SetAttributes(attribute.String("error", err.Error()))
+			span.End()
 			return
 		}
 		resp.Body.Close()
 
-		Logger.Info("outbound response successful")
+		Logger.Info("outbound request completed",
+			zap.String("service", serviceName),
+			zap.String("backend", backend.Name),
+			zap.String("method", req.Method),
+			zap.String("path", req.URL.Path),
+			zap.Int("status", resp.StatusCode),
+			zap.Duration("duration", time.Since(startTime)),
+			zap.String("trace_id", span.SpanContext().TraceID().String()),
+		)
 		RecordSidecarDuration("outbound", strconv.Itoa(resp.StatusCode), time.Since(startTime).Seconds())
+
+		// End span now - HTTP request/response cycle is complete
+		span.End()
 
 		// Skip bidirectional for health checks
 		if req.URL.Path == "/health" || req.URL.Path == "/healthz" || req.URL.Path == "/ready" {
@@ -511,10 +720,17 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 		}
 
 		// For keepalive/pipelining, continue proxying
+		// Handle both plain TCP and TLS connections
+		var connCloser closeWriter
+		if tc, ok := targetConn.(*net.TCPConn); ok {
+			connCloser = tc
+		} else if tlsc, ok := targetConn.(*tls.Conn); ok {
+			connCloser = tlsc
+		}
 		targetRW = readWriter{
 			Reader: targetReader,
 			Writer: targetConn,
-			conn:   targetConn.(*net.TCPConn),
+			conn:   connCloser,
 		}
 
 	default:
@@ -529,10 +745,14 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 		}
 		defer targetConn.Close()
 
+		var connCloser closeWriter
+		if tc, ok := targetConn.(*net.TCPConn); ok {
+			connCloser = tc
+		}
 		targetRW = readWriter{
 			Reader: bufio.NewReader(targetConn),
 			Writer: targetConn,
-			conn:   targetConn.(*net.TCPConn),
+			conn:   connCloser,
 		}
 	}
 
@@ -594,7 +814,8 @@ func (spx *SideCarProxyState) handleInboundWithDetection(conn net.Conn) {
 	conn.SetReadDeadline(time.Time{})
 
 	if err != nil || n == 0 {
-		Logger.Error("failed to peek connection", zap.Error(err))
+		// EOF is expected from TCP health probes, Prometheus scrapes, etc.
+		Logger.Debug("connection closed before data", zap.Error(err))
 		conn.Close()
 		return
 	}
@@ -749,7 +970,8 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn net.Conn) {
 		if len(state.PeerCertificates) > 0 {
 			span.SetAttributes(attribute.String("client.identity", state.PeerCertificates[0].Subject.CommonName))
 		}
-		defer span.End()
+		// Note: span.End() is called explicitly after response is written, not via defer
+		// This prevents blocking on proxyBidirectional for keepalive connections
 
 		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
@@ -757,6 +979,7 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn net.Conn) {
 
 		if err := req.Write(targetConn); err != nil {
 			Logger.Error("failed to forward HTTP request", zap.Error(err))
+			span.End()
 			return
 		}
 
@@ -767,6 +990,7 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn net.Conn) {
 		resp, err := http.ReadResponse(targetReader, req)
 		if err != nil {
 			Logger.Error("failed to read HTTP response", zap.Error(err))
+			span.End()
 			return
 		}
 
@@ -777,11 +1001,32 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn net.Conn) {
 
 		if err := resp.Write(clientConn); err != nil {
 			Logger.Error("failed to write response", zap.Error(err))
+			span.End()
 			return
 		}
 
 		resp.Body.Close()
 		RecordSidecarDuration("inbound", strconv.Itoa(resp.StatusCode), time.Since(startTime).Seconds())
+
+		clientIdentity := ""
+		if len(state.PeerCertificates) > 0 {
+			clientIdentity = state.PeerCertificates[0].Subject.CommonName
+		}
+
+		Logger.Info("inbound request completed",
+			zap.String("source", clientConn.RemoteAddr().String()),
+			zap.String("client_identity", clientIdentity),
+			zap.String("method", req.Method),
+			zap.String("path", req.URL.Path),
+			zap.String("target_port", port),
+			zap.Int("status", resp.StatusCode),
+			zap.Duration("duration", time.Since(startTime)),
+			zap.String("trace_id", span.SpanContext().TraceID().String()),
+		)
+
+		// End span now - HTTP request/response cycle is complete
+		// Don't wait for proxyBidirectional to finish
+		span.End()
 
 		targetRW = readWriter{
 			Reader: targetReader,

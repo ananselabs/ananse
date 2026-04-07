@@ -22,18 +22,23 @@ type Server struct {
 }
 
 func NewServer(config *pb.Config) (*Server, error) {
-	if config == nil {
-		return nil, fmt.Errorf("config is required")
-	}
 	s := &Server{
 		currentConfig: &pb.Config{
-			Services:    config.Services,
-			ProxyConfig: config.ProxyConfig,
+			ProxyConfig: &pb.ProxyConfig{
+				Port:                       8089,
+				MetricsPort:                9090,
+				HealthCheckIntervalSeconds: 10,
+			},
 			LastUpdated: timestamppb.Now(),
 			Version:     "0",
 		},
-		// Set initial version
 		subscribers: make(map[string]chan *pb.Config),
+	}
+	if config != nil {
+		s.currentConfig.Services = config.Services
+		if config.ProxyConfig != nil {
+			s.currentConfig.ProxyConfig = config.ProxyConfig
+		}
 	}
 	return s, nil
 }

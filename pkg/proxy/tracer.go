@@ -31,6 +31,12 @@ func getServiceName() string {
 }
 
 func InitTracer() func(context.Context) error {
+	// Check if tracing is disabled
+	if os.Getenv("ANANSE_TRACING_ENABLED") == "false" {
+		Logger.Info("Tracing disabled via ANANSE_TRACING_ENABLED=false")
+		return func(context.Context) error { return nil }
+	}
+
 	if serviceName == "" {
 		serviceName = "ananse-proxy"
 	}

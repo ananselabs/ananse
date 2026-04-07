@@ -1,9 +1,15 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Health struct {
@@ -55,15 +61,40 @@ func (h *Health) checkBackend(service string, backend *Backend) {
 	healthURL := *backend.TargetUrl
 	healthURL.Path = "/health"
 
+	// Create span for health check
+	ctx, span := otel.Tracer("ananse").Start(context.Background(), "health.check",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("health.service", service),
+			attribute.String("health.backend", backend.Name),
+			attribute.String("health.url", healthURL.String()),
+		),
+	)
+	defer span.End()
+
+	// Create request with context
+	req, err := http.NewRequestWithContext(ctx, "GET", healthURL.String(), nil)
+	if err != nil {
+		span.SetAttributes(attribute.String("error", err.Error()))
+		h.pool.UpdateBackendStatus(service, backend.Name, false, h.getInterval())
+		return
+	}
+
+	// Inject trace context into headers
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+
 	// TODO: refactor to make the timeout configurable
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(healthURL.String())
+	resp, err := client.Do(req)
 
 	if err != nil {
+		span.SetAttributes(attribute.String("error", err.Error()))
 		h.pool.UpdateBackendStatus(service, backend.Name, false, h.getInterval())
 		return
 	}
 	defer resp.Body.Close()
+
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		h.pool.UpdateBackendStatus(service, backend.Name, true, h.getInterval())

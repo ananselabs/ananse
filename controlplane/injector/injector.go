@@ -134,10 +134,22 @@ func mutatePod(req *admissionv1.AdmissionRequest) *admissionv1.AdmissionResponse
 	}
 
 	// 2. Decision Hierarchy: Should we inject?
+	px.Logger.Info("checking injection requirement",
+		zap.String("namespace", req.Namespace),
+		zap.String("pod", pod.Name),
+		zap.Bool("hostNetwork", pod.Spec.HostNetwork),
+		zap.Any("annotations", pod.Annotations))
+
 	if !injectRequired(&pod, req.Namespace) {
-		// If no injection needed, allow the pod as-is (no patch)
+		px.Logger.Info("injection NOT required, skipping",
+			zap.String("namespace", req.Namespace),
+			zap.String("pod", pod.Name))
 		return &admissionv1.AdmissionResponse{Allowed: true}
 	}
+
+	px.Logger.Info("injection REQUIRED, proceeding",
+		zap.String("namespace", req.Namespace),
+		zap.String("pod", pod.Name))
 
 	// 3. STRUCT DIFFING STRATEGY
 	//    a. Keep the original JSON
@@ -179,27 +191,30 @@ func mutatePod(req *admissionv1.AdmissionRequest) *admissionv1.AdmissionResponse
 
 func injectRequired(pod *corev1.Pod, ns string) bool {
 	// Rule 1: HostNetwork -> SKIP
-	// Safety first: Dont mess with the Node's network
+	// Safety first: Don't mess with the Node's network
 	if pod.Spec.HostNetwork {
 		return false
 	}
 
 	// Rule 2: Ignored Namespaces -> SKIP
+	// Note: webhook namespaceSelector should filter these, but double-check
 	for _, ignore := range IgnoredNamespaces {
 		if ns == ignore {
 			return false
 		}
 	}
 
-	// Rule 3: Explicit Annotation -> CHECK
-	// "true" = Yes, "false" = No
+	// Rule 3: Explicit Pod Annotation -> OVERRIDE
+	// Pod annotation takes precedence for opt-out
 	ann, ok := pod.Annotations["sidecar.ananse.io/inject"]
 	if ok {
 		return strings.ToLower(ann) == "true"
 	}
 
-	// Rule 4: Default behavior -> SKIP (Opt-in Model)
-	return false
+	// Rule 4: Default -> INJECT
+	// If we reach here, the namespace has ananse.io/inject=enabled label
+	// (enforced by webhook namespaceSelector), so inject by default
+	return true
 }
 
 // -----------------------------------------------------------------------------
@@ -217,7 +232,8 @@ func injectSidecar(pod *corev1.Pod) {
 		Image:           InitImage,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		SecurityContext: &corev1.SecurityContext{
-			RunAsUser: ptr(int64(0)), // Root (required for iptables)
+			RunAsUser:    ptr(int64(0)), // Root (required for iptables)
+			RunAsNonRoot: ptr(false),    // Override pod-level runAsNonRoot
 			Capabilities: &corev1.Capabilities{
 				Add:  []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 				Drop: []corev1.Capability{"ALL"}, // Drop everything else
@@ -273,6 +289,7 @@ func injectSidecar(pod *corev1.Pod) {
 
 		Env: []corev1.EnvVar{
 			{Name: "ANANSE_MODE", Value: "sidecar"},
+			{Name: "ANANSE_TRACING_ENABLED", Value: getEnv("TRACING_ENABLED", "false")},
 			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "otel-collector.monitoring.svc.cluster.local:4317"},
 			{Name: "ANANSE_MTLS_ENABLED", Value: mtlsEnabled},
 			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
@@ -288,11 +305,11 @@ func injectSidecar(pod *corev1.Pod) {
 		},
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("20Mi"),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceCPU:    resource.MustParse("100m"),
 				corev1.ResourceMemory: resource.MustParse("128Mi"),
 			},
 		},
@@ -327,11 +344,17 @@ func injectSidecar(pod *corev1.Pod) {
 		}
 	}
 
-	// C. Append logic (Go handles nil slices automatically!)
+	// C. Probe rewriting disabled - sidecar doesn't implement health proxy yet
+	// TODO: Implement /app-health/ proxy in sidecar, then re-enable
+	// probeEnvVars := rewriteProbes(pod)
+	// sidecarContainer.Env = append(sidecarContainer.Env, probeEnvVars...)
+
+	// D. Append containers (Go handles nil slices automatically!)
+	// NOTE: Must append sidecar AFTER adding probe env vars since Go copies structs
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, initContainer)
 	pod.Spec.Containers = append(pod.Spec.Containers, sidecarContainer)
 
-	// D. Add mesh cert volume if mTLS enabled
+	// E. Add mesh cert volume if mTLS enabled
 	if mtlsEnabled == "true" {
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
 			Name: "ananse-mesh-certs",
@@ -343,11 +366,154 @@ func injectSidecar(pod *corev1.Pod) {
 		})
 	}
 
-	// E. Add Annotation to track injection status
+	// F. Add Annotation to track injection status
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
 	pod.Annotations["sidecar.ananse.io/status"] = "injected"
+}
+
+// probeConfig stores original probe configuration for sidecar to use
+type probeConfig struct {
+	Port int    `json:"port"`
+	Path string `json:"path"`
+}
+
+// rewriteProbes rewrites HTTP probes to go through the sidecar's admin port.
+// This allows strict mTLS without breaking Kubernetes health checks.
+// - Stores original config in annotations for sidecar to read
+// - Returns env vars for sidecar to know probe configs
+// - Rewrites HTTP probes; passes through TCP, exec, gRPC probes unchanged
+func rewriteProbes(pod *corev1.Pod) []corev1.EnvVar {
+	const sidecarAdminPort = 15021
+	var envVars []corev1.EnvVar
+
+	for i := range pod.Spec.Containers {
+		container := &pod.Spec.Containers[i]
+
+		// Skip the sidecar itself
+		if container.Name == "ananse-proxy" || container.Name == "ananse-init" {
+			continue
+		}
+
+		// Rewrite liveness probe (HTTP only)
+		if container.LivenessProbe != nil && container.LivenessProbe.HTTPGet != nil {
+			originalPort := getProbePort(container.LivenessProbe.HTTPGet.Port, container)
+			originalPath := container.LivenessProbe.HTTPGet.Path
+			if originalPath == "" {
+				originalPath = "/"
+			}
+
+			// Store original in annotation
+			storeProbeAnnotation(pod, container.Name, "liveness", probeConfig{
+				Port: originalPort,
+				Path: originalPath,
+			})
+
+			// Add env vars for sidecar
+			envVars = append(envVars,
+				corev1.EnvVar{Name: "ANANSE_LIVENESS_PORT", Value: fmt.Sprintf("%d", originalPort)},
+				corev1.EnvVar{Name: "ANANSE_LIVENESS_PATH", Value: originalPath},
+			)
+
+			// Rewrite to sidecar
+			container.LivenessProbe.HTTPGet.Port = intstr.FromInt(sidecarAdminPort)
+			container.LivenessProbe.HTTPGet.Path = fmt.Sprintf("/app-health/%s/livez", container.Name)
+		}
+
+		// Rewrite readiness probe (HTTP only)
+		if container.ReadinessProbe != nil && container.ReadinessProbe.HTTPGet != nil {
+			originalPort := getProbePort(container.ReadinessProbe.HTTPGet.Port, container)
+			originalPath := container.ReadinessProbe.HTTPGet.Path
+			if originalPath == "" {
+				originalPath = "/"
+			}
+
+			// Store original in annotation
+			storeProbeAnnotation(pod, container.Name, "readiness", probeConfig{
+				Port: originalPort,
+				Path: originalPath,
+			})
+
+			// Add env vars for sidecar
+			envVars = append(envVars,
+				corev1.EnvVar{Name: "ANANSE_READINESS_PORT", Value: fmt.Sprintf("%d", originalPort)},
+				corev1.EnvVar{Name: "ANANSE_READINESS_PATH", Value: originalPath},
+			)
+
+			// Rewrite to sidecar
+			container.ReadinessProbe.HTTPGet.Port = intstr.FromInt(sidecarAdminPort)
+			container.ReadinessProbe.HTTPGet.Path = fmt.Sprintf("/app-health/%s/readyz", container.Name)
+		}
+
+		// Rewrite startup probe (HTTP only)
+		if container.StartupProbe != nil && container.StartupProbe.HTTPGet != nil {
+			originalPort := getProbePort(container.StartupProbe.HTTPGet.Port, container)
+			originalPath := container.StartupProbe.HTTPGet.Path
+			if originalPath == "" {
+				originalPath = "/"
+			}
+
+			// Store original in annotation
+			storeProbeAnnotation(pod, container.Name, "startup", probeConfig{
+				Port: originalPort,
+				Path: originalPath,
+			})
+
+			// Add env vars for sidecar
+			envVars = append(envVars,
+				corev1.EnvVar{Name: "ANANSE_STARTUP_PORT", Value: fmt.Sprintf("%d", originalPort)},
+				corev1.EnvVar{Name: "ANANSE_STARTUP_PATH", Value: originalPath},
+			)
+
+			// Rewrite to sidecar
+			container.StartupProbe.HTTPGet.Port = intstr.FromInt(sidecarAdminPort)
+			container.StartupProbe.HTTPGet.Path = fmt.Sprintf("/app-health/%s/startupz", container.Name)
+		}
+
+		// TCP, exec, gRPC probes: pass through unchanged
+		// (kubelet will probe directly, which is fine for non-HTTP checks)
+	}
+
+	return envVars
+}
+
+// storeProbeAnnotation saves original probe config to pod annotation
+func storeProbeAnnotation(pod *corev1.Pod, containerName, probeType string, config probeConfig) {
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		px.Logger.Error("failed to marshal probe config", zap.Error(err))
+		return
+	}
+
+	key := fmt.Sprintf("ananse.io/original-%s-probe-%s", probeType, containerName)
+	pod.Annotations[key] = string(configJSON)
+}
+
+// getProbePort resolves the probe port to an integer
+func getProbePort(port intstr.IntOrString, container *corev1.Container) int {
+	if port.Type == intstr.Int {
+		return port.IntValue()
+	}
+
+	// Named port - look up in container ports
+	for _, p := range container.Ports {
+		if p.Name == port.StrVal {
+			return int(p.ContainerPort)
+		}
+	}
+
+	// Fallback: try to parse as int
+	if i, err := strconv.Atoi(port.StrVal); err == nil {
+		return i
+	}
+
+	// Default to 8080 if we can't resolve
+	return 8080
 }
 
 // -----------------------------------------------------------------------------
