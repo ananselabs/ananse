@@ -1,0 +1,17 @@
+{{- if .Values.observability.prometheus.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ananse
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ananse
+spec:
+  selector:
+    matchLabels:
+      app: webhook-ananse
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+{{- end }}
