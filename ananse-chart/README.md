@@ -87,6 +87,7 @@ Optional dependencies - disabled by default.
 | `observability.loki.enabled` | Install Loki | `false` |
 | `observability.promtail.enabled` | Install Promtail | `false` |
 | `observability.tempo.enabled` | Install Tempo | `false` |
+| `observability.dashboard.enabled` | Auto-load Grafana dashboard | `true` |
 
 ```bash
 # Update dependencies first

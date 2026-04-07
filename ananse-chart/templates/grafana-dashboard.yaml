@@ -1,0 +1,13 @@
+{{- if and .Values.observability.prometheus.enabled .Values.observability.dashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ananse-grafana-dashboard
+  namespace: {{ .Values.namespace }}
+  labels:
+    grafana_dashboard: "1"
+    app: ananse
+data:
+  ananse-dashboard.json: |-
+{{ .Files.Get "dashboards/ananse-dashboard.json" | indent 4 }}
+{{- end }}

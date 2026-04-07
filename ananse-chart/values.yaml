@@ -36,6 +36,8 @@ observability:
     enabled: false
   tempo:
     enabled: false
+  dashboard:
+    enabled: true  # Auto-load Grafana dashboard (requires prometheus.enabled)
 
 # Override sub-chart values when enabled
 # Example: kube-prometheus-stack config
