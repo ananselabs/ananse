@@ -1,0 +1,32 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: ananse-webhook
+  namespace: {{.Values.namespace }}
+webhooks:
+  - name: sidecar-injector.ananse.io
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+    clientConfig:
+      service:
+        name: ananse-webhook
+        namespace: "ananse-system"
+        path: "/mutate"
+        port: 443
+      caBundle: |
+        {{.Values.caBundle }}
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 5
+    failurePolicy: {{.Values.failurePolicy }}
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "{{.Values.namespace }}", "kube-public", "cert-manager"]
+        - key: ananse.io/inject
+          operator: In
+          values: ["enabled"]

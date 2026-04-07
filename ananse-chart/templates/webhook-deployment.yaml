@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controlplane
+  namespace: {{.Values.namespace }}
+  labels:
+    app: webhook-ananse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webhook-ananse
+  template:
+    metadata:
+      labels:
+        app: webhook-ananse
+    spec:
+      serviceAccountName: ananse-injector
+      containers:
+        - name: controlplane
+          image: {{ .Values.controlplane.image }}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8443
+              name: webhook
+            {{- if .Values.metrics.enabled }}
+            - containerPort: {{ .Values.metrics.port }}
+              name: metrics
+            {{- end }}
+          args:
+            {{- if eq .Values.discovery.mode "k8s" }}
+            - "-k8s"
+            {{- else if eq .Values.discovery.mode "consul" }}
+            - "-consul"
+            - "-consul-addr"
+            - "{{ .Values.discovery.consul.address }}"
+            {{- if .Values.discovery.consul.tag }}
+            - "-consul-tag"
+            - "{{ .Values.discovery.consul.tag }}"
+            {{- end }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: ananse-injector-config
+          volumeMounts:
+            - mountPath: "/etc/webhook/certs"
+              name: certs
+              readOnly: true
+
+      volumes:
+        - name: certs
+          secret:
+            secretName: ananse-webhook-certs
+

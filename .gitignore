@@ -161,3 +161,6 @@ fabric.properties
 *.idea
 
 deploy/secret.yaml
+# Helm chart dependencies
+ananse-chart/charts/
+bin/

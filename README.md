@@ -68,6 +68,11 @@
 - **Namespace Exclusions**: Skips system namespaces to prevent deadlocks
 - **Security Hardened**: Non-root containers, dropped capabilities, read-only filesystem
 
+### Service Discovery
+- **Kubernetes**: Native service discovery via EndpointSlices
+- **Consul**: Watches Consul catalog for service changes
+- **File-based**: Static configuration from YAML/JSON files
+
 ### Observability
 - **Prometheus Metrics**: Request counts, latencies, circuit breaker states
 - **Distributed Tracing**: OpenTelemetry integration with Tempo/Jaeger
@@ -77,7 +82,37 @@
 
 ## Quick Start
 
-### Option 1: Kubernetes Deployment
+### Option 1: Helm (Recommended)
+
+**Prerequisites:** Helm 3.0+, kubectl, Kubernetes 1.19+
+
+```bash
+cd ananse-chart
+
+# Update dependencies (optional - for observability stack)
+helm dependency update
+
+# Generate TLS certificates
+../scripts/generate-certs.sh
+cat ca.crt | base64 | tr -d '\n' > ca.crt.b64
+
+# Install Ananse
+helm install ananse . \
+  --set-file caBundle=./ca.crt.b64 \
+  -n ananse-system --create-namespace
+
+# With observability stack
+helm install ananse . \
+  --set-file caBundle=./ca.crt.b64 \
+  --set observability.prometheus.enabled=true \
+  --set observability.loki.enabled=true \
+  --set observability.tempo.enabled=true \
+  -n ananse-system --create-namespace
+```
+
+See [ananse-chart/README.md](ananse-chart/README.md) for full configuration options.
+
+### Option 2: kubectl (Manual)
 
 **Prerequisites:** kubectl, kind/minikube, Docker
 
@@ -158,11 +193,32 @@ services:
       - "8080:8080"
 ```
 
-### Option 3: Local Development
+### Option 3: VM/Docker with Consul
+
+For non-Kubernetes environments using Consul for service discovery:
 
 ```bash
-# Run control plane
-go run ./controlplane/cmd/
+# Run control plane with Consul discovery
+./controlplane -consul -consul-addr consul.example.com:8500
+
+# With tag filtering (only services tagged "ananse")
+./controlplane -consul -consul-addr consul.example.com:8500 -consul-tag ananse
+
+# Run proxy in gateway mode
+./proxy
+```
+
+### Option 4: Local Development
+
+```bash
+# Run control plane with Kubernetes discovery
+go run ./controlplane/cmd/ -k8s
+
+# Run control plane with Consul discovery
+go run ./controlplane/cmd/ -consul -consul-addr localhost:8500
+
+# Run control plane with file-based config
+go run ./controlplane/cmd/ -config-path ./config -config-name services
 
 # Run proxy in gateway mode (default)
 go run ./proxy/
@@ -214,6 +270,7 @@ ananse/
 │   ├── injector/
 │   │   ├── injector.go          # Sidecar injection logic
 │   │   └── webhook.go           # Webhook server
+│   ├── consul-client.go         # Consul service discovery
 │   ├── file-client.go           # File-based config watcher
 │   └── k8s-client.go            # K8s service discovery
 │
@@ -228,17 +285,22 @@ ananse/
 ├── proxy/
 │   └── main.go                  # Proxy entry point
 │
+├── ananse-chart/                # Helm chart
+│   ├── Chart.yaml               # Dependencies (observability stack)
+│   ├── values.yaml              # Configuration
+│   └── templates/               # K8s manifests
+│
 ├── scripts/
 │   ├── iptables-init.sh         # Traffic interception rules
 │   └── generate-certs.sh        # TLS certificate generation
 │
-├── deploy/
+├── deploy/                      # Raw K8s manifests (use Helm instead)
 │   ├── namespace.yaml
 │   ├── rbac.yaml
-│   ├── injector-config.yaml     # ConfigMap for image settings
+│   ├── injector-config.yaml
 │   ├── webhook-deployment.yaml
 │   ├── webhook-service.yaml
-│   └── webhook-config.yaml      # MutatingWebhookConfiguration
+│   └── webhook-config.yaml
 │
 └── docker/
     ├── Dockerfile.controlplane

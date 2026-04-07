@@ -1,0 +1,27 @@
+apiVersion: v2
+name: ananse
+description: Ananse Service Mesh - lightweight service mesh for Kubernetes
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: kube-prometheus-stack
+    version: "67.9.0"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: observability.prometheus.enabled
+
+  - name: loki
+    version: "6.29.0"
+    repository: https://grafana.github.io/helm-charts
+    condition: observability.loki.enabled
+
+  - name: promtail
+    version: "6.16.6"
+    repository: https://grafana.github.io/helm-charts
+    condition: observability.promtail.enabled
+
+  - name: tempo
+    version: "1.18.0"
+    repository: https://grafana.github.io/helm-charts
+    condition: observability.tempo.enabled

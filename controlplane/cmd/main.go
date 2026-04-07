@@ -23,6 +23,9 @@ func main() {
 
 	// Command-line flags
 	useK8s := flag.Bool("k8s", false, "Use Kubernetes service discovery")
+	useConsul := flag.Bool("consul", false, "Use Consul service discovery")
+	consulAddr := flag.String("consul-addr", "localhost:8500", "Consul agent address")
+	consulTag := flag.String("consul-tag", "", "Only discover services with this tag")
 	configPath := flag.String("config-path", "./config", "Path to config directory")
 	configName := flag.String("config-name", "config", "Config file name (without extension)")
 	configType := flag.String("config-type", "yaml", "Config file type (yaml, json)")
@@ -37,14 +40,28 @@ func main() {
 
 	// Create appropriate config watcher
 	var watcher cp.ConfigWatcher
-	if *useK8s {
+	switch {
+	case *useK8s:
 		px.Logger.Info("Starting with Kubernetes service discovery")
 		k8sClient, err := cp.NewK8sClient(*ananseNamespace)
 		if err != nil {
 			px.Logger.Fatal("Failed to create K8s client", zap.Error(err))
 		}
 		watcher = k8sClient
-	} else {
+
+	case *useConsul:
+		px.Logger.Info("Starting with Consul service discovery",
+			zap.String("consul_addr", *consulAddr))
+		consulClient, err := cp.NewConsulClient(cp.ConsulConfig{
+			Address:   *consulAddr,
+			TagFilter: *consulTag,
+		})
+		if err != nil {
+			px.Logger.Fatal("Failed to create Consul client", zap.Error(err))
+		}
+		watcher = consulClient
+
+	default:
 		px.Logger.Info("Starting with file-based configuration",
 			zap.String("config_path", *configPath),
 			zap.String("config_name", *configName))
@@ -53,37 +70,25 @@ func main() {
 
 	go injector.StartWebhookServer(":8443")
 
-	// Start watching for configs
-	configChan := watcher.Watch(ctx)
-
-	// Wait for initial config
-	px.Logger.Info("Waiting for initial configuration...")
-	initialConfig, ok := <-configChan
-	if !ok {
-		px.Logger.Fatal("Config channel closed before receiving initial config")
-	}
-	if initialConfig == nil {
-		px.Logger.Fatal("Received nil initial config")
-	}
-
-	px.Logger.Info("Initial configuration loaded",
-		zap.String("version", initialConfig.Version),
-		zap.Int("services", len(initialConfig.Services)))
-
-	// Create control plane server
-	server, err := NewServer(initialConfig)
+	// Create control plane server with empty config (sidecars can connect immediately)
+	server, err := NewServer(nil)
 	if err != nil {
 		px.Logger.Fatal("Failed to create server", zap.Error(err))
 	}
 
-	// Start gRPC server in background
+	// Start gRPC server immediately
 	go func() {
 		if err := server.Start(*grpcAddr); err != nil {
 			px.Logger.Fatal("gRPC server failed", zap.Error(err))
 		}
 	}()
 
-	// Watch for config updates
+	px.Logger.Info("gRPC server started, waiting for service discovery...")
+
+	// Start watching for configs
+	configChan := watcher.Watch(ctx)
+
+	// Watch for config updates and push to subscribers
 	go func() {
 		for {
 			select {
@@ -93,6 +98,9 @@ func main() {
 					return
 				}
 				if cfg != nil {
+					px.Logger.Info("Configuration received",
+						zap.String("version", cfg.Version),
+						zap.Int("services", len(cfg.Services)))
 					server.UpdateConfig(cfg)
 				}
 			case <-ctx.Done():

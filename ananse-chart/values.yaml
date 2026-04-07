@@ -1,0 +1,56 @@
+name: "ananse"
+namespace: "ananse-system"
+debug_mode: "false"
+failurePolicy: "Fail"
+
+controlplane:
+  image: "anthony4m/ananse-controlplane:v1"
+
+sidecar:
+  image: "anthony4m/ananse-proxy:v1"
+
+init:
+  image: "anthony4m/ananse-init:v1"
+
+discovery:
+  mode: "k8s"  # k8s | consul | file
+  consul:
+    address: "localhost:8500"
+    tag: ""
+
+metrics:
+  enabled: true
+  port: 9090
+
+proxy:
+  mode: "sidecar"  # sidecar | gateway
+
+# Observability stack - disabled by default
+# Enable to pull in as dependencies
+observability:
+  prometheus:
+    enabled: false
+  loki:
+    enabled: false
+  promtail:
+    enabled: false
+  tempo:
+    enabled: false
+
+# Override sub-chart values when enabled
+# Example: kube-prometheus-stack config
+kube-prometheus-stack:
+  grafana:
+    enabled: true
+  prometheus:
+    prometheusSpec:
+      serviceMonitorSelectorNilUsesHelmValues: false
+
+# Example: tempo config
+tempo:
+  tempo:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
