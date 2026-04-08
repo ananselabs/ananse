@@ -19,3 +19,19 @@ spec:
       port: {{ .Values.metrics.port }}
       targetPort: {{ .Values.metrics.port }}
     {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ananse-controlplane
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: webhook-ananse
+spec:
+  selector:
+    app: webhook-ananse
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 50051
+      targetPort: 50051

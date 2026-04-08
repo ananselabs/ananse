@@ -22,8 +22,8 @@ import (
 
 var (
 	// CONFIGURATION - loaded from environment variables (set via ConfigMap)
-	SidecarImage         = getEnv("SIDECAR_IMAGE", "anthony4m/ananse-proxy:v1")
-	InitImage            = getEnv("INIT_IMAGE", "anthony4m/ananse-init:v1")
+	SidecarImage         = getEnv("SIDECAR_IMAGE", "ghcr.io/ananselabs/ananse-proxy:latest")
+	InitImage            = getEnv("INIT_IMAGE", "ghcr.io/ananselabs/ananse-init:latest")
 	ProxyPort            = int32(getEnvInt("PROXY_PORT", 15001))
 	InboundPort          = int32(getEnvInt("INBOUND_PORT", 15006))
 	ProxyUID             = int64(getEnvInt("PROXY_UID", 1337))

@@ -1,16 +1,21 @@
 name: "ananse"
 namespace: "ananse-system"
+
+# TLS certs for webhook (create secret manually if not provided)
+tls:
+  crt: ""
+  key: ""
 debug_mode: "false"
 failurePolicy: "Fail"
 
 controlplane:
-  image: "anthony4m/ananse-controlplane:v1"
+  image: "ghcr.io/ananselabs/ananse-controlplane:latest"
 
 sidecar:
-  image: "anthony4m/ananse-proxy:v1"
+  image: "ghcr.io/ananselabs/ananse-proxy:latest"
 
 init:
-  image: "anthony4m/ananse-init:v1"
+  image: "ghcr.io/ananselabs/ananse-init:latest"
 
 discovery:
   mode: "k8s"  # k8s | consul | file
@@ -38,6 +43,9 @@ observability:
     enabled: false
   dashboard:
     enabled: true  # Auto-load Grafana dashboard (requires prometheus.enabled)
+  serviceMonitor:
+    enabled: true   # Deploy ServiceMonitor (works with any existing Prometheus)
+    labels: {}      # Extra labels, e.g. team: default
 
 # Override sub-chart values when enabled
 # Example: kube-prometheus-stack config

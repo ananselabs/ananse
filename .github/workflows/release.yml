@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  ORG: ananselabs
+
+jobs:
+  build-images:
+    name: Build & Push ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: ananse-controlplane
+            dockerfile: docker/Dockerfile.controlplane
+          - name: ananse-proxy
+            dockerfile: docker/Dockerfile.proxy
+          - name: ananse-init
+            dockerfile: docker/Dockerfile.init
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/${{ env.ORG }}/${{ matrix.name }}:${{ github.ref_name }}
+            ghcr.io/${{ env.ORG }}/${{ matrix.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release-chart:
+    name: Release Helm Chart
+    needs: build-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Add Helm dependency repos
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      - name: Pin image tags to release version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          sed -i "s|:latest\"|:${VERSION}\"|g" ananse-chart/values.yaml
+          sed -i "s/^version:.*/version: ${VERSION#v}/" ananse-chart/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" ananse-chart/Chart.yaml
+
+      - name: Update chart dependencies
+        run: helm dependency update ananse-chart
+
+      - name: Package chart
+        run: helm package ananse-chart --destination .cr-release-packages
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: .cr-release-packages/*.tgz
+          generate_release_notes: true
+
+      - name: Update Helm repo index on gh-pages
+        run: |
+          git fetch origin
+          # Switch to gh-pages branch (create if it doesn't exist)
+          if git show-ref --quiet refs/remotes/origin/gh-pages; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf .
+            echo "# Ananse Helm Repository" > README.md
+            git add README.md
+            git commit -m "init gh-pages"
+          fi
+
+          # Copy new chart package
+          cp .cr-release-packages/*.tgz .
+
+          # Merge into existing index or create new one
+          if [ -f index.yaml ]; then
+            helm repo index . --url https://ananselabs.github.io/ananse --merge index.yaml
+          else
+            helm repo index . --url https://ananselabs.github.io/ananse
+          fi
+
+          git add index.yaml *.tgz
+          git commit -m "Release ${{ github.ref_name }}"
+          git push origin gh-pages
