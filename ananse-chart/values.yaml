@@ -3,8 +3,8 @@ namespace: "ananse-system"
 
 # TLS certs for webhook (create secret manually if not provided)
 tls:
-  crt: ""
-  key: ""
+  crtBase64: ""  # Pass pre-encoded: cat server.crt | base64 | tr -d '\n'
+  keyBase64: ""  # Pass pre-encoded: cat server.key | base64 | tr -d '\n'
 debug_mode: "false"
 failurePolicy: "Fail"
 
