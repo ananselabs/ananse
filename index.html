@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ananse — Lightweight Service Mesh for Kubernetes</title>
+  <meta name="description" content="Ananse is a lightweight, Go-native service mesh for Kubernetes. mTLS, observability, and traffic control — without the complexity." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --black: #0a0a0a;
+      --white: #ffffff;
+      --grey: #6b7280;
+      --light: #f4f4f5;
+      --accent: #18181b;
+      --border: #e4e4e7;
+      --code-bg: #18181b;
+      --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--white);
+      color: var(--black);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* NAV */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 2rem;
+      height: 56px;
+      background: rgba(255,255,255,0.9);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-logo {
+      font-weight: 700;
+      font-size: 1.1rem;
+      letter-spacing: -0.02em;
+      text-decoration: none;
+      color: var(--black);
+    }
+
+    .nav-logo span {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      background: var(--black);
+      border-radius: 6px;
+      color: var(--white);
+      font-size: 0.75rem;
+      font-weight: 800;
+      text-align: center;
+      line-height: 24px;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 1.5rem;
+      list-style: none;
+      align-items: center;
+    }
+
+    .nav-links a {
+      text-decoration: none;
+      color: var(--grey);
+      font-size: 0.9rem;
+      transition: color 0.15s;
+    }
+
+    .nav-links a:hover { color: var(--black); }
+
+    .nav-links .btn-gh {
+      padding: 0.4rem 0.9rem;
+      background: var(--black);
+      color: var(--white) !important;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+
+    /* HERO */
+    .hero {
+      padding: 120px 2rem 80px;
+      max-width: 900px;
+      margin: 0 auto;
+      text-align: center;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--light);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 4px 14px;
+      font-size: 0.8rem;
+      color: var(--grey);
+      margin-bottom: 2rem;
+    }
+
+    .hero-badge::before {
+      content: '';
+      width: 8px; height: 8px;
+      background: #22c55e;
+      border-radius: 50%;
+    }
+
+    h1 {
+      font-size: clamp(2.5rem, 6vw, 4rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.1;
+      margin-bottom: 1.25rem;
+    }
+
+    h1 em {
+      font-style: normal;
+      background: linear-gradient(135deg, #18181b 0%, #52525b 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      font-size: 1.2rem;
+      color: var(--grey);
+      max-width: 600px;
+      margin: 0 auto 2.5rem;
+      line-height: 1.7;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.7rem 1.5rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      text-decoration: none;
+      transition: all 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--black);
+      color: var(--white);
+    }
+
+    .btn-primary:hover { background: #333; }
+
+    .btn-secondary {
+      background: var(--white);
+      color: var(--black);
+      border: 1.5px solid var(--border);
+    }
+
+    .btn-secondary:hover { border-color: #aaa; }
+
+    /* INSTALL BLOCK */
+    .install-block {
+      max-width: 640px;
+      margin: 4rem auto 0;
+      background: var(--code-bg);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .install-tabs {
+      display: flex;
+      border-bottom: 1px solid #2d2d2d;
+    }
+
+    .install-tab {
+      padding: 0.6rem 1.25rem;
+      font-size: 0.8rem;
+      font-family: var(--mono);
+      color: #9ca3af;
+      cursor: pointer;
+      border: none;
+      background: none;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+    }
+
+    .install-tab.active {
+      color: var(--white);
+      border-bottom-color: var(--white);
+    }
+
+    .install-content {
+      padding: 1.25rem 1.5rem;
+    }
+
+    .install-content pre {
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      color: #e5e7eb;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+
+    .install-content .comment { color: #6b7280; }
+    .install-content .cmd { color: #86efac; }
+    .install-content .flag { color: #93c5fd; }
+    .install-content .val { color: #fbbf24; }
+
+    /* FEATURES */
+    .section {
+      padding: 5rem 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .section-label {
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--grey);
+      margin-bottom: 0.75rem;
+    }
+
+    .section-title {
+      font-size: clamp(1.75rem, 4vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin-bottom: 1rem;
+    }
+
+    .section-sub {
+      color: var(--grey);
+      font-size: 1.05rem;
+      max-width: 560px;
+      line-height: 1.7;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3rem;
+    }
+
+    .feature-card {
+      padding: 1.75rem;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--white);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .feature-card:hover {
+      border-color: #aaa;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+    }
+
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      background: var(--light);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+      margin-bottom: 1rem;
+    }
+
+    .feature-card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.01em;
+    }
+
+    .feature-card p {
+      color: var(--grey);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+
+    /* HOW IT WORKS */
+    .how-section {
+      background: var(--light);
+      padding: 5rem 2rem;
+    }
+
+    .how-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 2rem;
+      margin-top: 3rem;
+      counter-reset: step;
+    }
+
+    .step {
+      counter-increment: step;
+    }
+
+    .step-num {
+      width: 36px;
+      height: 36px;
+      background: var(--black);
+      color: var(--white);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+    }
+
+    .step h3 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 0.4rem;
+    }
+
+    .step p {
+      color: var(--grey);
+      font-size: 0.875rem;
+      line-height: 1.6;
+    }
+
+    /* MODES */
+    .modes-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-top: 3rem;
+    }
+
+    @media (max-width: 640px) { .modes-grid { grid-template-columns: 1fr; } }
+
+    .mode-card {
+      padding: 2rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .mode-card.dark {
+      background: var(--black);
+      color: var(--white);
+      border-color: var(--black);
+    }
+
+    .mode-card h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .mode-card p {
+      font-size: 0.875rem;
+      line-height: 1.6;
+      color: var(--grey);
+      margin-bottom: 1rem;
+    }
+
+    .mode-card.dark p { color: #9ca3af; }
+
+    .mode-tag {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 100px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: var(--light);
+      color: var(--black);
+      margin-bottom: 1rem;
+    }
+
+    .mode-card.dark .mode-tag {
+      background: #27272a;
+      color: #d4d4d8;
+    }
+
+    .mode-use {
+      font-size: 0.8rem;
+      color: var(--grey);
+      font-family: var(--mono);
+    }
+
+    .mode-card.dark .mode-use { color: #6b7280; }
+
+    /* QUICK START */
+    .quickstart {
+      max-width: 740px;
+      margin: 3rem auto 0;
+    }
+
+    .code-block {
+      background: var(--code-bg);
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1rem;
+      position: relative;
+    }
+
+    .code-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      font-family: var(--mono);
+      margin-bottom: 0.75rem;
+    }
+
+    .code-block pre {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      color: #e5e7eb;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+
+    /* FOOTER */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem;
+      text-align: center;
+    }
+
+    footer p {
+      color: var(--grey);
+      font-size: 0.85rem;
+    }
+
+    footer a {
+      color: var(--black);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    footer a:hover { text-decoration: underline; }
+
+    /* DIVIDER */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a class="nav-logo" href="/"><span>A</span>Ananse</a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#how-it-works">How it works</a></li>
+    <li><a href="#quickstart">Install</a></li>
+    <li><a href="https://github.com/ananselabs/ananse" class="btn-gh">GitHub →</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-badge">v0.2.0 — Now available</div>
+
+  <h1>The service mesh that<br/><em>stays out of your way</em></h1>
+
+  <p>
+    Ananse is a lightweight, Go-native service mesh for Kubernetes.
+    Transparent traffic interception, observability, and optional mTLS —
+    without the operational weight of Istio or Linkerd.
+  </p>
+
+  <div class="hero-actions">
+    <a href="#quickstart" class="btn btn-primary">Get started</a>
+    <a href="https://github.com/ananselabs/ananse" class="btn btn-secondary">View on GitHub</a>
+  </div>
+
+  <!-- INSTALL BLOCK -->
+  <div class="install-block">
+    <div class="install-tabs">
+      <button class="install-tab active">Helm</button>
+    </div>
+    <div class="install-content">
+      <pre><span class="comment"># Add the Ananse Helm repo</span>
+<span class="cmd">helm</span> repo add ananse https://ananselabs.github.io/ananse
+<span class="cmd">helm</span> repo update
+
+<span class="comment"># Install into your cluster</span>
+<span class="cmd">helm</span> install ananse ananse/ananse \
+  <span class="flag">--set-file</span> <span class="val">caBundle=./ca.crt.b64</span> \
+  <span class="flag">-n</span> ananse-system <span class="flag">--create-namespace</span></pre>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- FEATURES -->
+<section class="section" id="features">
+  <div class="section-label">What you get</div>
+  <h2 class="section-title">Everything a mesh needs.<br/>Nothing it doesn't.</h2>
+  <p class="section-sub">
+    Ananse handles the plumbing — traffic interception, routing, and observability —
+    so your services stay focused on business logic.
+  </p>
+
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">⚡</div>
+      <h3>Transparent injection</h3>
+      <p>Mutating webhook automatically injects a sidecar proxy into labelled namespaces. Your pods need zero changes.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📡</div>
+      <h3>gRPC control plane</h3>
+      <p>The control plane streams routing config to every proxy over gRPC. Updates propagate in milliseconds.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Built-in observability</h3>
+      <p>Prometheus metrics, Grafana dashboards, and distributed tracing via OpenTelemetry — out of the box.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔒</div>
+      <h3>Optional mTLS</h3>
+      <p>Mutual TLS between sidecars, enabled per-pod with a single annotation. Off by default — turn it on when you need it.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔍</div>
+      <h3>Service discovery</h3>
+      <p>Kubernetes-native discovery, Consul for VM/Docker deployments, or static file config. One control plane, any backend.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🪶</div>
+      <h3>Tiny footprint</h3>
+      <p>Each sidecar runs at ~100m CPU / 64Mi memory. The full mesh adds minimal overhead to your cluster.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- HOW IT WORKS -->
+<section class="how-section" id="how-it-works">
+  <div class="how-inner">
+    <div class="section-label">Architecture</div>
+    <h2 class="section-title">How Ananse works</h2>
+    <p class="section-sub">
+      Three components. No CRDs to learn. No separate CLI.
+    </p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Webhook intercepts pods</h3>
+        <p>When a pod is created in a labelled namespace, the mutating webhook injects an init container and a sidecar proxy before the pod starts.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Init sets up iptables</h3>
+        <p>The init container writes iptables rules that redirect all inbound and outbound TCP traffic through the sidecar proxy on ports 15006 and 15001.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Proxy connects to control plane</h3>
+        <p>The sidecar subscribes to the control plane over gRPC. The control plane streams routing tables derived from Kubernetes service discovery.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <h3>Traffic flows through the mesh</h3>
+        <p>The proxy handles TLS, metrics, and tracing transparently. Your app code talks to localhost — the proxy handles the rest.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- DEPLOYMENT MODES -->
+<section class="section">
+  <div class="section-label">Deployment modes</div>
+  <h2 class="section-title">Sidecar or gateway —<br/>your call</h2>
+  <p class="section-sub">Ananse works whether you're on Kubernetes or running containers on bare VMs.</p>
+
+  <div class="modes-grid">
+    <div class="mode-card dark">
+      <div class="mode-tag">Kubernetes</div>
+      <h3>Sidecar mode</h3>
+      <p>One proxy per pod. The webhook handles injection automatically. Works with any CNI.</p>
+      <div class="mode-use">discovery: k8s</div>
+    </div>
+    <div class="mode-card">
+      <div class="mode-tag">VM / Docker</div>
+      <h3>Gateway mode</h3>
+      <p>A single Ananse instance acts as an ingress gateway. Integrates with Consul for service discovery.</p>
+      <div class="mode-use">discovery: consul</div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- QUICK START -->
+<section class="section" id="quickstart">
+  <div class="section-label">Quick start</div>
+  <h2 class="section-title">Up in five minutes</h2>
+  <p class="section-sub">Install Ananse, label your namespace, and your services join the mesh on next rollout.</p>
+
+  <div class="quickstart">
+    <div class="code-block">
+      <div class="code-label">1 — Add the Helm repo</div>
+      <pre>helm repo add ananse https://ananselabs.github.io/ananse
+helm repo update</pre>
+    </div>
+
+    <div class="code-block">
+      <div class="code-label">2 — Generate TLS certs for the webhook</div>
+      <pre>curl -sL https://raw.githubusercontent.com/ananselabs/ananse/main/scripts/generate-certs.sh | bash</pre>
+    </div>
+
+    <div class="code-block">
+      <div class="code-label">3 — Install</div>
+      <pre>helm install ananse ananse/ananse \
+  --set-file caBundle=./ca.crt.b64 \
+  -n ananse-system --create-namespace</pre>
+    </div>
+
+    <div class="code-block">
+      <div class="code-label">4 — Label your namespace</div>
+      <pre>kubectl label namespace default ananse.io/inject=enabled
+
+# Restart your workloads — sidecars inject automatically
+kubectl rollout restart deployment -n default</pre>
+    </div>
+
+    <div style="margin-top: 2rem; text-align: center;">
+      <a href="https://github.com/ananselabs/ananse" class="btn btn-primary">Read the docs on GitHub →</a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <p>
+    Built by <a href="https://github.com/ananselabs">Ananse Labs</a> ·
+    <a href="https://github.com/ananselabs/ananse">GitHub</a> ·
+    <a href="https://github.com/ananselabs/ananse/releases">Releases</a> ·
+    Open source
+  </p>
+</footer>
+
+</body>
+</html>
