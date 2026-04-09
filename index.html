@@ -486,7 +486,7 @@
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-badge">v0.2.0 — Now available</div>
+  <div class="hero-badge">v0.2.9 — Now available</div>
 
   <h1>The service mesh that<br/><em>stays out of your way</em></h1>
 
@@ -543,8 +543,8 @@
     </div>
     <div class="feature-card">
       <div class="feature-icon">📊</div>
-      <h3>Built-in observability</h3>
-      <p>Prometheus metrics, Grafana dashboards, and distributed tracing via OpenTelemetry — out of the box.</p>
+      <h3>Full observability stack</h3>
+      <p>Metrics via Prometheus (PodMonitor per sidecar), logs via Loki/Promtail, and distributed traces via OpenTelemetry + Tempo — all linked in Grafana.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">🔒</div>
@@ -620,6 +620,49 @@
       <h3>Gateway mode</h3>
       <p>A single Ananse instance acts as an ingress gateway. Integrates with Consul for service discovery.</p>
       <div class="mode-use">discovery: consul</div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- OBSERVABILITY -->
+<section class="how-section">
+  <div class="how-inner">
+    <div class="section-label">Observability</div>
+    <h2 class="section-title">Metrics, logs, and traces — wired together</h2>
+    <p class="section-sub">
+      Every sidecar exposes Prometheus metrics on port 15021. Traces flow via OTLP gRPC.
+      Loki captures logs with namespace/pod/container labels. All three link up in Grafana.
+    </p>
+
+    <div class="steps" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top: 2.5rem;">
+      <div class="step">
+        <div class="step-num" style="background:#3b82f6">M</div>
+        <h3>Metrics</h3>
+        <p>PodMonitor auto-discovers injected pods across all namespaces. Works with any Prometheus Operator install.</p>
+      </div>
+      <div class="step">
+        <div class="step-num" style="background:#f97316">L</div>
+        <h3>Logs</h3>
+        <p>Promtail ships pod logs to Loki with namespace, pod, and container labels. Log lines link to traces via TraceID.</p>
+      </div>
+      <div class="step">
+        <div class="step-num" style="background:#8b5cf6">T</div>
+        <h3>Traces</h3>
+        <p>Sidecars emit OTLP spans to Tempo (or Jaeger). Grafana Tempo links traces back to Loki log lines.</p>
+      </div>
+    </div>
+
+    <div style="max-width: 640px; margin: 2.5rem auto 0;">
+      <div class="code-block">
+        <div class="code-label">Enable full observability stack</div>
+        <pre style="font-family: var(--mono); font-size: 0.82rem; color: #e5e7eb; line-height: 1.8;">helm install ananse ananse/ananse \
+  --set-file caBundle=./ca.crt.b64 \
+  --set observability.tracing.enabled=true \
+  --set observability.tracing.endpoint=tempo.monitoring.svc:4317 \
+  -n ananse-system --create-namespace</pre>
+      </div>
     </div>
   </div>
 </section>
