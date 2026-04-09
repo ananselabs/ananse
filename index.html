@@ -486,7 +486,7 @@
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-badge">v0.2.9 — Now available</div>
+  <div class="hero-badge">v0.3.0 — Now available</div>
 
   <h1>The service mesh that<br/><em>stays out of your way</em></h1>
 
@@ -650,7 +650,7 @@
       <div class="step">
         <div class="step-num" style="background:#8b5cf6">T</div>
         <h3>Traces</h3>
-        <p>Sidecars emit OTLP spans to Tempo (or Jaeger). Grafana Tempo links traces back to Loki log lines.</p>
+        <p>Sidecars emit OTLP spans to Tempo (or Jaeger). Grafana Tempo links traces back to Loki log lines. Enable <code>filterHealthChecks</code> to drop successful probe spans and keep Tempo clean.</p>
       </div>
     </div>
 
@@ -661,6 +661,7 @@
   --set-file caBundle=./ca.crt.b64 \
   --set observability.tracing.enabled=true \
   --set observability.tracing.endpoint=tempo.monitoring.svc:4317 \
+  --set observability.tracing.filterHealthChecks=true \
   -n ananse-system --create-namespace</pre>
       </div>
     </div>
