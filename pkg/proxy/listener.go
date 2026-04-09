@@ -757,7 +757,16 @@ func (spx *SideCarProxyState) handleOutboundConnection(clientConn *net.TCPConn) 
 	}
 
 	// F. BIDIRECTIONAL PROXY (for remaining data)
-	if err := spx.proxyBidirectional(clientConn, targetRW); err != nil {
+	// Use reader (not clientConn directly) so that bytes already peeked during
+	// protocol detection are forwarded first. For HTTP this buffer is empty after
+	// http.ReadRequest; for TCP (PostgreSQL, Redis, etc.) the peeked startup bytes
+	// are still in the buffer and must reach the upstream server.
+	clientRW := readWriter{
+		Reader: reader,
+		Writer: clientConn,
+		conn:   clientConn,
+	}
+	if err := spx.proxyBidirectional(clientRW, targetRW); err != nil {
 		Logger.Error("proxy error", zap.Error(err))
 	}
 }
