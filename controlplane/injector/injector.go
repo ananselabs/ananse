@@ -292,6 +292,10 @@ func injectSidecar(pod *corev1.Pod) {
 			{Name: "ANANSE_TRACING_ENABLED", Value: getEnv("TRACING_ENABLED", "false")},
 			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "otel-collector.monitoring.svc.cluster.local:4317"},
 			{Name: "ANANSE_MTLS_ENABLED", Value: mtlsEnabled},
+			// Tell Go runtime to GC aggressively before hitting the container limit.
+			// Without this, GOGC=100 allows heap to reach 2×live_heap, which can
+			// exceed the cgroup limit and trigger OOMKill before GC runs.
+			{Name: "GOMEMLIMIT", Value: "480MiB"},
 			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			}},
@@ -310,7 +314,7 @@ func injectSidecar(pod *corev1.Pod) {
 			},
 			Limits: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("200m"),
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
 	}

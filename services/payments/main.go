@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 )
 
 var (
@@ -39,13 +38,17 @@ func handlePayments(w http.ResponseWriter, r *http.Request) {
 	)
 	defer span.End()
 
+	traceID := span.SpanContext().TraceID().String()
 	w.Header().Set("Content-Type", "application/json")
 
 	// 1. Simulation: Latency
 	sleep := r.URL.Query().Get("sleep")
 	if sleep != "" {
 		if sleepMs, err := strconv.Atoi(sleep); err == nil {
-			fmt.Printf("Sleeping for %dms\n", sleepMs)
+			proxy.Logger.Info("simulating latency",
+				zap.String("trace_id", traceID),
+				zap.Int("sleep_ms", sleepMs),
+			)
 			time.Sleep(time.Duration(sleepMs) * time.Millisecond)
 		}
 	}
@@ -55,13 +58,24 @@ func handlePayments(w http.ResponseWriter, r *http.Request) {
 		if code, err := strconv.Atoi(codeStr); err == nil {
 			w.WriteHeader(code)
 			if code >= 400 {
+				proxy.Logger.Warn("forced error",
+					zap.String("trace_id", traceID),
+					zap.Int("status", code),
+				)
 				json.NewEncoder(w).Encode(map[string]string{
-					"error": fmt.Sprintf("Forced error: %d", code),
+					"error": "Forced error",
 				})
 				return
 			}
 		}
 	}
+
+	proxy.Logger.Info("request completed",
+		zap.String("trace_id", traceID),
+		zap.String("service", "payments"),
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.Path),
+	)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"service":          "payments",
@@ -101,9 +115,8 @@ func main() {
 		newStatus := isHealthy
 		mu.Unlock()
 
-		msg := fmt.Sprintf("Health toggled to: %v", newStatus)
-		log.Println(msg)
-		w.Write([]byte(msg))
+		proxy.Logger.Info("health toggled", zap.Bool("healthy", newStatus))
+		w.Write([]byte("Health toggled"))
 	})
 
 	port := os.Getenv("PORT")
@@ -117,22 +130,22 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Payment service listening on :%s", port)
+		proxy.Logger.Info("service started", zap.String("service", "payments"), zap.String("port", port))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %s\n", err)
+			proxy.Logger.Fatal("listen failed", zap.Error(err))
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server...")
+	proxy.Logger.Info("shutting down", zap.String("service", "payments"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("Server forced to shutdown:", err)
+		proxy.Logger.Fatal("forced shutdown", zap.Error(err))
 	}
 
-	log.Println("Server exiting")
+	proxy.Logger.Info("service stopped", zap.String("service", "payments"))
 }
