@@ -82,32 +82,53 @@
 
 ## Quick Start
 
-### Option 1: Helm (Recommended)
+### Option 1: Helm — published chart (Recommended)
 
 **Prerequisites:** Helm 3.0+, kubectl, Kubernetes 1.19+
 
 ```bash
-cd ananse-chart
+# 1. Add the Helm repo
+helm repo add ananse https://ananselabs.github.io/ananse
+helm repo update
 
-# Update dependencies (optional - for observability stack)
-helm dependency update
+# 2. Generate TLS certs for the mutating webhook
+bash <(curl -sL https://raw.githubusercontent.com/ananselabs/ananse/main/scripts/generate-certs.sh)
 
-# Generate TLS certificates
-../scripts/generate-certs.sh
-cat ca.crt | base64 | tr -d '\n' > ca.crt.b64
-
-# Install Ananse
-helm install ananse . \
+# 3. Install Ananse
+helm install ananse ananse/ananse \
   --set-file caBundle=./ca.crt.b64 \
   -n ananse-system --create-namespace
 
-# With observability stack
-helm install ananse . \
+# 4. Label your namespace — injection activates on next pod create
+kubectl label namespace default ananse.io/inject=enabled
+
+# 5. Restart your workloads to get sidecars
+kubectl rollout restart deployment -n default
+```
+
+**Verify injection:**
+```bash
+kubectl get pod -n default -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'
+# Each pod should show: <app-name>  ananse-proxy
+```
+
+**With tracing (Tempo/Jaeger):**
+```bash
+helm install ananse ananse/ananse \
   --set-file caBundle=./ca.crt.b64 \
-  --set observability.prometheus.enabled=true \
-  --set observability.loki.enabled=true \
-  --set observability.tempo.enabled=true \
+  --set observability.tracing.enabled=true \
+  --set observability.tracing.endpoint=tempo.monitoring.svc:4317 \
   -n ananse-system --create-namespace
+```
+
+**With Prometheus Operator (PodMonitor auto-scraping):**
+
+If your cluster has Prometheus Operator, the PodMonitor is deployed automatically when `serviceMonitor.enabled: true` (default). Prometheus will discover all injected sidecars across all namespaces via the `sidecar.ananse.io/status: injected` label.
+
+If your Prometheus CR doesn't watch all namespaces, apply RBAC for cross-namespace discovery:
+```bash
+# Give Prometheus SA cluster-scope pod read access
+kubectl apply -f https://raw.githubusercontent.com/ananselabs/ananse/main/k8s/prometheus-rbac.yaml
 ```
 
 See [ananse-chart/README.md](ananse-chart/README.md) for full configuration options.
@@ -322,12 +343,15 @@ The sidecar mode uses `SO_ORIGINAL_DST` to recover original destinations after i
 
 ---
 
-## Monitoring
+## Observability
 
-### Prometheus Metrics
+### Metrics
+
+Each sidecar proxy exposes Prometheus metrics on port **15021** at `/metrics`. The controlplane does **not** expose metrics.
 
 ```bash
-curl http://localhost:9090/metrics
+# Scrape a sidecar directly
+curl http://<pod-ip>:15021/metrics
 ```
 
 Key metrics:
@@ -336,9 +360,54 @@ Key metrics:
 - `ananse_circuit_breaker_state` - Circuit breaker status
 - `ananse_backend_health` - Backend health status
 
+**Prometheus scraping:**
+
+| Setup | How |
+|---|---|
+| Prometheus Operator installed | PodMonitor auto-deployed by Helm chart (`serviceMonitor.enabled: true`) |
+| Standalone | `kubectl apply -f k8s/` (includes Prometheus with kubernetes_sd scraping port 15021) |
+
+The PodMonitor uses `namespaceSelector: any: true` to discover injected pods across all namespaces. It matches pods by **label** `sidecar.ananse.io/status: injected` (set automatically on injection) on the named port `ananse-admin`.
+
+### Logs
+
+Promtail ships pod logs to Loki with `namespace`, `pod`, and `container` labels.
+
+```bash
+# Deploy standalone observability stack
+kubectl create ns monitoring
+kubectl apply -f k8s/
+```
+
+### Distributed Tracing
+
+The sidecar sends traces via OpenTelemetry OTLP gRPC (port 4317) to any compatible backend (Tempo, Jaeger).
+
+Configure via Helm values:
+```yaml
+observability:
+  tracing:
+    enabled: "true"
+    endpoint: "tempo.monitoring.svc.cluster.local:4317"
+```
+
+Or set directly on the injector ConfigMap:
+```bash
+kubectl patch configmap ananse-injector-config -n ananse-system \
+  --type merge -p '{"data":{"TRACING_ENABLED":"true","OTEL_ENDPOINT":"tempo.monitoring.svc:4317"}}'
+```
+
 ### Grafana Dashboards
 
-Access Grafana at [http://localhost:3000](http://localhost:3000) (default: admin/admin)
+Access Grafana at [http://localhost:3000](http://localhost:3000) after port-forwarding:
+
+```bash
+kubectl port-forward svc/grafana 3000:3000 -n monitoring
+```
+
+Datasources provisioned automatically: **Prometheus**, **Loki** (with TraceID links to Tempo), **Tempo** (with log links to Loki).
+
+A pre-built Ananse dashboard is available at `tools/dashboard/ananse_dashboard.json` — import it via Grafana UI (Dashboards → Import).
 
 ---
 

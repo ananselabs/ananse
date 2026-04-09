@@ -30,7 +30,7 @@
       },
       "id": 100,
       "panels": [],
-      "title": "🕸️ Mesh Overview",
+      "title": "\ud83d\udd78\ufe0f Mesh Overview",
       "type": "row"
     },
     {
@@ -404,11 +404,11 @@
       "pluginVersion": "12.4.1",
       "targets": [
         {
-          "expr": "count(ananse_backend_health_status == 1)",
+          "expr": "count(ananse_sidecar_connections_active)",
           "refId": "A"
         }
       ],
-      "title": "Healthy Backends",
+      "title": "Active Sidecars",
       "type": "stat"
     },
     {
@@ -421,7 +421,7 @@
       },
       "id": 101,
       "panels": [],
-      "title": "📊 Service Traffic",
+      "title": "\ud83d\udcca Service Traffic",
       "type": "row"
     },
     {
@@ -626,7 +626,7 @@
       },
       "id": 102,
       "panels": [],
-      "title": "🛡️ Service Health",
+      "title": "\ud83d\udee1\ufe0f Service Health",
       "type": "row"
     },
     {
@@ -712,13 +712,13 @@
       "pluginVersion": "12.4.1",
       "targets": [
         {
-          "expr": "ananse_backend_health_status",
+          "expr": "ananse_sidecar_connections_active",
           "format": "table",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Backend Health Status",
+      "title": "Active Connections by Pod",
       "transformations": [
         {
           "id": "organize",
@@ -832,13 +832,13 @@
       "pluginVersion": "12.4.1",
       "targets": [
         {
-          "expr": "ananse_circuit_breaker_state",
+          "expr": "ananse_http_requests_in_flight",
           "format": "table",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Circuit Breaker States",
+      "title": "In-Flight Requests by Pod",
       "transformations": [
         {
           "id": "organize",
@@ -963,7 +963,7 @@
       },
       "id": 105,
       "panels": [],
-      "title": "🔒 mTLS Status",
+      "title": "\ud83d\udd12 mTLS Status",
       "type": "row"
     },
     {
@@ -1020,16 +1020,24 @@
       },
       "id": 50,
       "options": {
-        "displayLabels": ["name", "percent"],
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
         "legend": {
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
         },
         "pieType": "donut",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1136,7 +1144,10 @@
       "id": 51,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right",
           "showLegend": true
@@ -1203,7 +1214,9 @@
         "minVizWidth": 75,
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1231,7 +1244,7 @@
       },
       "id": 103,
       "panels": [],
-      "title": "🔍 Traces",
+      "title": "\ud83d\udd0d Traces",
       "type": "row"
     },
     {
@@ -1306,7 +1319,7 @@
       },
       "id": 104,
       "panels": [],
-      "title": "📈 Latency Distribution",
+      "title": "\ud83d\udcc8 Latency Distribution",
       "type": "row"
     },
     {
@@ -1361,7 +1374,7 @@
           "color": "rgba(255,0,255,0.7)"
         },
         "filterValues": {
-          "le": 1e-9
+          "le": 1e-09
         },
         "legend": {
           "show": true
@@ -1402,7 +1415,7 @@
       },
       "id": 106,
       "panels": [],
-      "title": "📝 Logs",
+      "title": "\ud83d\udcdd Logs",
       "type": "row"
     },
     {
@@ -1434,7 +1447,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{namespace=\"ananse\"} | json",
+          "expr": "{namespace=\"default\"} | json",
           "queryType": "range",
           "refId": "A"
         }
@@ -1471,7 +1484,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{namespace=\"ananse\", container=\"ananse-proxy\"} | json | level = \"error\"",
+          "expr": "{namespace=\"default\", container=\"ananse-proxy\"} | json | level = \"error\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -1508,7 +1521,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{namespace=\"ananse\"} | json | status >= 400",
+          "expr": "{namespace=\"default\"} | json | status >= 400",
           "queryType": "range",
           "refId": "A"
         }
