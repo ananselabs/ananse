@@ -947,9 +947,16 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn net.Conn) {
 	prtDetect := spx.detectProtocol(header)
 	RecordSidecarConnection("inbound", prtDetect)
 
+	var clientConnCloser closeWriter
+	if tc, ok := clientConn.(*net.TCPConn); ok {
+		clientConnCloser = tc
+	} else if tlsc, ok := clientConn.(*tls.Conn); ok {
+		clientConnCloser = tlsc
+	}
 	rw := readWriter{
 		Reader: reader,
 		Writer: clientConn,
+		conn:   clientConnCloser,
 	}
 
 	var targetRW readWriter
@@ -1037,9 +1044,24 @@ func (spx *SideCarProxyState) handleInboundConnection(clientConn net.Conn) {
 		// Don't wait for proxyBidirectional to finish
 		span.End()
 
+		// Skip bidirectional proxy when connection should close:
+		// - client sent Connection: close (req.Close = true)
+		// - server responded with Connection: close (resp.Close = true)
+		// - request is a health/probe endpoint (short-lived, no streaming)
+		if req.Close || resp.Close || strings.Contains(req.URL.Path, "/health") {
+			return
+		}
+
+		var targetConnCloser closeWriter
+		if tc, ok := targetConn.(*net.TCPConn); ok {
+			targetConnCloser = tc
+		} else if tlsc, ok := targetConn.(*tls.Conn); ok {
+			targetConnCloser = tlsc
+		}
 		targetRW = readWriter{
 			Reader: targetReader,
 			Writer: targetConn,
+			conn:   targetConnCloser,
 		}
 
 	default:
