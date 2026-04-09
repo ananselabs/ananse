@@ -20,6 +20,10 @@ spec:
   selector:
     matchLabels:
       sidecar.ananse.io/status: injected
+  # Copy the app label from the pod onto every metric so dashboards can
+  # break down by (app) — e.g. "blackkonnectcxpgateway"
+  podTargetLabels:
+    - app
   podMetricsEndpoints:
     - port: ananse-admin    # container port name defined by the injector
       path: /metrics
