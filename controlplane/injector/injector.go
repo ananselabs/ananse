@@ -331,17 +331,26 @@ func injectSidecar(pod *corev1.Pod) {
 	}
 
 	// Only add probes in production mode (debug mode waits for debugger)
+	// Use HTTP probes on the admin port (15021), NOT TCP socket probes on 15006.
+	// TCP probes on 15006 come from the kubelet (node → pod), bypass iptables DNAT,
+	// and cause getOriginalDst to return port 15006 → inbound handler dials itself → loop.
 	if !DebugMode {
 		sidecarContainer.LivenessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt(15006)},
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz",
+					Port: intstr.FromInt(15021),
+				},
 			},
 			InitialDelaySeconds: 10,
 			PeriodSeconds:       10,
 		}
 		sidecarContainer.ReadinessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt(15006)},
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/ready",
+					Port: intstr.FromInt(15021),
+				},
 			},
 			InitialDelaySeconds: 2,
 			PeriodSeconds:       5,
