@@ -2,8 +2,8 @@ apiVersion: v2
 name: ananse
 description: Ananse Service Mesh - lightweight service mesh for Kubernetes
 type: application
-version: 0.2.9
-appVersion: "v0.2.9"
+version: 0.3.0
+appVersion: "v0.3.0"
 
 dependencies:
   - name: kube-prometheus-stack
