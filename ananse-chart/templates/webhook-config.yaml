@@ -16,8 +16,7 @@ webhooks:
         namespace: "ananse-system"
         path: "/mutate"
         port: 443
-      caBundle: |
-        {{.Values.caBundle }}
+      caBundle: "{{.Values.caBundle }}"
     admissionReviewVersions: ["v1"]
     sideEffects: None
     timeoutSeconds: 5
