@@ -98,6 +98,7 @@ jobs:
       - name: Update Helm repo index on gh-pages
         run: |
           git fetch origin
+          git checkout -- .
           # Switch to gh-pages branch (create if it doesn't exist)
           if git show-ref --quiet refs/remotes/origin/gh-pages; then
             git checkout gh-pages
