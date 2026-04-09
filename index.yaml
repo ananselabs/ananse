@@ -2,8 +2,62 @@ apiVersion: v1
 entries:
   ananse:
   - apiVersion: v2
+    appVersion: v0.2.3
+    created: "2026-04-09T10:41:23.599918925Z"
+    dependencies:
+    - condition: observability.prometheus.enabled
+      name: kube-prometheus-stack
+      repository: https://prometheus-community.github.io/helm-charts
+      version: 67.9.0
+    - condition: observability.loki.enabled
+      name: loki
+      repository: https://grafana.github.io/helm-charts
+      version: 6.29.0
+    - condition: observability.promtail.enabled
+      name: promtail
+      repository: https://grafana.github.io/helm-charts
+      version: 6.16.6
+    - condition: observability.tempo.enabled
+      name: tempo
+      repository: https://grafana.github.io/helm-charts
+      version: 1.18.0
+    description: Ananse Service Mesh - lightweight service mesh for Kubernetes
+    digest: b0185b3e0c32880d68a6e607537a6957744c2d58fc92446e390c5f44e3d0475d
+    name: ananse
+    type: application
+    urls:
+    - https://ananselabs.github.io/ananse/ananse-0.2.3.tgz
+    version: 0.2.3
+  - apiVersion: v2
+    appVersion: v0.2.3
+    created: "2026-04-09T10:41:23.641973796Z"
+    dependencies:
+    - condition: observability.prometheus.enabled
+      name: kube-prometheus-stack
+      repository: https://prometheus-community.github.io/helm-charts
+      version: 67.9.0
+    - condition: observability.loki.enabled
+      name: loki
+      repository: https://grafana.github.io/helm-charts
+      version: 6.29.0
+    - condition: observability.promtail.enabled
+      name: promtail
+      repository: https://grafana.github.io/helm-charts
+      version: 6.16.6
+    - condition: observability.tempo.enabled
+      name: tempo
+      repository: https://grafana.github.io/helm-charts
+      version: 1.18.0
+    description: Ananse Service Mesh - lightweight service mesh for Kubernetes
+    digest: b0185b3e0c32880d68a6e607537a6957744c2d58fc92446e390c5f44e3d0475d
+    name: ananse
+    type: application
+    urls:
+    - https://ananselabs.github.io/ananse/.cr-release-packages/ananse-0.2.3.tgz
+    version: 0.2.3
+  - apiVersion: v2
     appVersion: v0.2.2
-    created: "2026-04-09T10:16:26.533960796Z"
+    created: "2026-04-09T10:41:23.559133459Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -29,35 +83,8 @@ entries:
     - https://ananselabs.github.io/ananse/ananse-0.2.2.tgz
     version: 0.2.2
   - apiVersion: v2
-    appVersion: v0.2.2
-    created: "2026-04-09T10:16:26.573937442Z"
-    dependencies:
-    - condition: observability.prometheus.enabled
-      name: kube-prometheus-stack
-      repository: https://prometheus-community.github.io/helm-charts
-      version: 67.9.0
-    - condition: observability.loki.enabled
-      name: loki
-      repository: https://grafana.github.io/helm-charts
-      version: 6.29.0
-    - condition: observability.promtail.enabled
-      name: promtail
-      repository: https://grafana.github.io/helm-charts
-      version: 6.16.6
-    - condition: observability.tempo.enabled
-      name: tempo
-      repository: https://grafana.github.io/helm-charts
-      version: 1.18.0
-    description: Ananse Service Mesh - lightweight service mesh for Kubernetes
-    digest: 49272e9718966583b188960068900c1a0fd74cf8c87d187d4bba93e2834c39d0
-    name: ananse
-    type: application
-    urls:
-    - https://ananselabs.github.io/ananse/.cr-release-packages/ananse-0.2.2.tgz
-    version: 0.2.2
-  - apiVersion: v2
     appVersion: v0.2.0
-    created: "2026-04-09T10:16:26.494216058Z"
+    created: "2026-04-09T10:41:23.519623704Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -82,4 +109,4 @@ entries:
     urls:
     - https://ananselabs.github.io/ananse/ananse-0.2.0.tgz
     version: 0.2.0
-generated: "2026-04-09T10:16:26.447863116Z"
+generated: "2026-04-09T10:41:23.466762271Z"
