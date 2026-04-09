@@ -11,5 +11,6 @@ data:
   PROXY_UID: "1337"
   PROXY_MODE: "{{ .Values.proxy.mode }}"
   CONTROL_PLANE_ENDPOINT: "ananse-controlplane.{{ .Values.namespace }}.svc:50051"
-  METRICS_PORT: "{{ .Values.metrics.port }}"
   DEBUG_MODE: "{{ .Values.debug_mode }}"
+  TRACING_ENABLED: "{{ .Values.observability.tracing.enabled }}"
+  OTEL_ENDPOINT: "{{ .Values.observability.tracing.endpoint }}"

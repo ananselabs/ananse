@@ -7,15 +7,32 @@ data:
   datasources.yaml: |
     apiVersion: 1
     datasources:
-      - name: Tempo
-        type: tempo
-        access: proxy
-        url: http://tempo:3200
-        isDefault: true
       - name: Prometheus
         type: prometheus
         access: proxy
         url: http://prometheus:9090
+        isDefault: true
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        jsonData:
+          derivedFields:
+            - name: TraceID
+              matcherRegex: '"traceId":"(\w+)"'
+              url: '$${__value.raw}'
+              datasourceUid: tempo
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+        uid: tempo
+        jsonData:
+          tracesToLogs:
+            datasourceUid: loki
+            filterByTraceID: true
+          serviceMap:
+            datasourceUid: prometheus
 ---
 apiVersion: apps/v1
 kind: Deployment

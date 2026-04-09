@@ -1,8 +1,12 @@
 {{- if .Values.observability.serviceMonitor.enabled }}
+# PodMonitor targets every pod that has the ananse sidecar injected.
+# Sidecars expose Prometheus metrics at :15021/metrics (the admin port).
+# A ServiceMonitor would need a Service per injected pod — PodMonitor is the
+# correct primitive here because sidecars live alongside arbitrary app pods.
 apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
+kind: PodMonitor
 metadata:
-  name: ananse
+  name: ananse-sidecars
   namespace: {{ .Values.namespace }}
   labels:
     app: ananse
@@ -10,11 +14,14 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  # Watch all namespaces so we find injected pods wherever they run
+  namespaceSelector:
+    any: true
   selector:
     matchLabels:
-      app: webhook-ananse
-  endpoints:
-    - port: metrics
-      interval: 15s
+      sidecar.ananse.io/status: injected
+  podMetricsEndpoints:
+    - port: ananse-admin    # container port name defined by the injector
       path: /metrics
+      interval: 15s
 {{- end }}

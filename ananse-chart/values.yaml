@@ -23,10 +23,6 @@ discovery:
     address: "localhost:8500"
     tag: ""
 
-metrics:
-  enabled: true
-  port: 9090
-
 proxy:
   mode: "sidecar"  # sidecar | gateway
 
@@ -44,8 +40,13 @@ observability:
   dashboard:
     enabled: true  # Auto-load Grafana dashboard (requires prometheus.enabled)
   serviceMonitor:
-    enabled: true   # Deploy ServiceMonitor (works with any existing Prometheus)
-    labels: {}      # Extra labels, e.g. team: default
+    enabled: true   # Deploy PodMonitor targeting injected sidecars on :15021
+    labels: {}      # Extra labels matched by your Prometheus CR's podMonitorSelector
+  tracing:
+    enabled: "false"
+    # OTLP gRPC endpoint for the sidecar to export traces to.
+    # For standalone stack: tempo.monitoring.svc.cluster.local:4317
+    endpoint: ""
 
 # Override sub-chart values when enabled
 # Example: kube-prometheus-stack config

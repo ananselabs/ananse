@@ -164,3 +164,6 @@ deploy/secret.yaml
 # Helm chart dependencies
 ananse-chart/charts/
 bin/
+# Generated TLS certs (private keys must not be committed)
+certs/*.key
+certs/*.csr

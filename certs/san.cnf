@@ -1,0 +1,18 @@
+[req]
+default_bits = 2048
+prompt = no
+default_md = sha256
+distinguished_name = dn
+req_extensions = req_ext
+
+[dn]
+CN = ananse-webhook.ananse-system.svc
+
+[req_ext]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = ananse-webhook
+DNS.2 = ananse-webhook.ananse-system
+DNS.3 = ananse-webhook.ananse-system.svc
+DNS.4 = ananse-webhook.ananse-system.svc.cluster.local

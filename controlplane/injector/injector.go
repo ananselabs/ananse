@@ -260,6 +260,7 @@ func injectSidecar(pod *corev1.Pod) {
 		Ports: []corev1.ContainerPort{
 			{Name: "outbound", ContainerPort: 15001, Protocol: corev1.ProtocolTCP},
 			{Name: "inbound", ContainerPort: 15006, Protocol: corev1.ProtocolTCP},
+			{Name: "ananse-admin", ContainerPort: 15021, Protocol: corev1.ProtocolTCP},
 		},
 		SecurityContext: func() *corev1.SecurityContext {
 
@@ -290,7 +291,7 @@ func injectSidecar(pod *corev1.Pod) {
 		Env: []corev1.EnvVar{
 			{Name: "ANANSE_MODE", Value: "sidecar"},
 			{Name: "ANANSE_TRACING_ENABLED", Value: getEnv("TRACING_ENABLED", "false")},
-			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "otel-collector.monitoring.svc.cluster.local:4317"},
+			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: getEnv("OTEL_ENDPOINT", "")},
 			{Name: "ANANSE_MTLS_ENABLED", Value: mtlsEnabled},
 			// Tell Go runtime to GC aggressively before hitting the container limit.
 			// Without this, GOGC=100 allows heap to reach 2×live_heap, which can
@@ -379,11 +380,18 @@ func injectSidecar(pod *corev1.Pod) {
 		})
 	}
 
-	// F. Add Annotation to track injection status
+	// F. Add Annotation + Label to track injection status.
+	// Annotation: human-readable status marker.
+	// Label: required so PodMonitor selector can target injected pods.
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
 	pod.Annotations["sidecar.ananse.io/status"] = "injected"
+
+	if pod.Labels == nil {
+		pod.Labels = make(map[string]string)
+	}
+	pod.Labels["sidecar.ananse.io/status"] = "injected"
 }
 
 // probeConfig stores original probe configuration for sidecar to use
