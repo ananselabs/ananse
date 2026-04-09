@@ -14,3 +14,4 @@ data:
   DEBUG_MODE: "{{ .Values.debug_mode }}"
   TRACING_ENABLED: "{{ .Values.observability.tracing.enabled }}"
   OTEL_ENDPOINT: "{{ .Values.observability.tracing.endpoint }}"
+  FILTER_HEALTH_CHECKS: "{{ .Values.observability.tracing.filterHealthChecks }}"

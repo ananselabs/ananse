@@ -47,6 +47,9 @@ observability:
     # OTLP gRPC endpoint for the sidecar to export traces to.
     # For standalone stack: tempo.monitoring.svc.cluster.local:4317
     endpoint: ""
+    # When true, health check traces (/management/health, /healthz, /ready) are
+    # dropped unless the response was an error (5xx / transport failure).
+    filterHealthChecks: false
 
 # Override sub-chart values when enabled
 # Example: kube-prometheus-stack config
