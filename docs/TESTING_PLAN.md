@@ -29,10 +29,10 @@ The goal is production-grade confidence before deploying to external clusters.
   - `boutique-baseline` - Same app WITHOUT mesh (for comparison)
   - `ananse-system` - Control plane
 - **Observability Stack:**
-  - Prometheus (metrics)
-  - Grafana (dashboards)
-  - Tempo (traces)
-  - Loki (logs)
+  - Prometheus (metrics via PodMonitor — scrapes sidecar `:15021/metrics`)
+  - Grafana (dashboards — auto-provisioned from `ananse-chart/dashboards/ananse-dashboard.json`)
+  - Tempo (traces via OTLP gRPC — set `filterHealthChecks: true` to suppress probe noise)
+  - Loki + Promtail (logs — use `{namespace="<ns>", container="ananse-proxy"}` for sidecar logs only)
 
 ---
 

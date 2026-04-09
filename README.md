@@ -262,6 +262,9 @@ ANANSE_MODE=sidecar go run ./proxy/
 | `PROXY_PORT` | `15001` | Outbound listener port |
 | `INBOUND_PORT` | `15006` | Inbound listener port |
 | `PROXY_UID` | `1337` | UID for sidecar (iptables bypass) |
+| `ANANSE_TRACING_ENABLED` | `""` | Set to `"false"` to disable tracing entirely |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTLP gRPC endpoint for traces |
+| `FILTER_HEALTH_CHECKS` | `"false"` | Set to `"true"` to drop successful health probe spans from Tempo |
 
 ### Pod Annotations
 
@@ -389,6 +392,10 @@ observability:
   tracing:
     enabled: "true"
     endpoint: "tempo.monitoring.svc.cluster.local:4317"
+    # Optional: drop successful health check spans from Tempo.
+    # Only errored health probes (5xx / transport failure) are exported.
+    # Reduces Tempo noise from kubelet liveness/readiness probes.
+    filterHealthChecks: false
 ```
 
 Or set directly on the injector ConfigMap:
@@ -396,6 +403,8 @@ Or set directly on the injector ConfigMap:
 kubectl patch configmap ananse-injector-config -n ananse-system \
   --type merge -p '{"data":{"TRACING_ENABLED":"true","OTEL_ENDPOINT":"tempo.monitoring.svc:4317"}}'
 ```
+
+**Health check trace filtering** (`filterHealthChecks: true`): kubelet probes (`/management/health`, `/healthz`, `/ready`) fire every few seconds per pod. By default these generate a trace each. Enabling this filter drops successful health probe spans at the sidecar before they reach Tempo — only spans where the probe returned 5xx are exported, which is exactly when you need the trace for debugging.
 
 ### Grafana Dashboards
 

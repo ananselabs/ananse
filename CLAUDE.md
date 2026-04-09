@@ -1,4 +1,566 @@
-## Last Session: 2026-02-26
+## Last Session: 2026-04-09 (continued — trace filtering + v0.3.0)
+
+### What Got Done
+- Split log panel into "Application & Mesh Logs" (everything except health probes) and "Health Probe Logs" (only `/management/health` traffic)
+- Added opt-in health check trace filtering: `filterHealthChecks: true` drops successful health probe spans from Tempo, only errored ones (5xx) are exported
+- Released v0.3.0 — CI must be triggered from `ananselabs/ananse`, not `Anthony4m/ananse` (GHCR push permissions)
+- Enabled `filterHealthChecks: true` in BlackKonnect, bumped all images to v0.3.0
+- Updated README, docs, and gh-pages website
+
+### Health Check Trace Filtering
+
+**Why:** kubelet probes fire every 5-10s × 3 pods × 2 probes = ~24 traces/min of `/management/health` requests cluttering Tempo search.
+
+**How (opt-in):**
+```yaml
+observability:
+  tracing:
+    filterHealthChecks: true   # false by default
+```
+
+Maps to env var `FILTER_HEALTH_CHECKS=true` on every injected sidecar.
+
+**Implementation** (`pkg/proxy/tracer.go`):
+- `healthFilterExporter` wraps the OTLP exporter
+- At export time (after response is known), drops spans where `http.url` contains `/health` AND status is not `codes.Error`
+- 5xx health probe spans pass through — exactly when you need them for debugging
+
+**Tail-based decision** — the span is created and the response is received before the export filter runs, so the filter always knows the outcome. A head-based sampler can't do "only error health checks" because it decides before the request completes.
+
+### Log Panel Split
+
+**Service Mesh Logs** panel was split into two side-by-side panels:
+
+| Panel | Query | Shows |
+|---|---|---|
+| Application & Mesh Logs | `{namespace="default"} \| drop __error__, __error_details__ != "/management/health"` | All logs except health probes |
+| Health Probe Logs | `{namespace="default"} \|= "/management/health" \| drop __error__, __error_details__` | Kubelet probe traffic only |
+
+`| drop __error__, __error_details__` removes the `JSONParserErr` Loki adds when it can't parse plain-text Spring Boot logs as JSON — no filtering of log lines, just removes the noise field.
+
+### Release Process — Always Push to `ananselabs` Remote
+
+The repo has two remotes:
+- `origin` → `Anthony4m/ananse` — personal account, **no GHCR write access to `ananselabs` org**
+- `ananselabs` → `ananselabs/ananse` — org repo, CI has GHCR write access
+
+To release:
+```bash
+git push ananselabs main
+git push ananselabs v0.3.0   # triggers CI on ananselabs/ananse
+```
+
+Never trigger release from `origin` tag push — it will fail with `permission_denied`.
+
+---
+
+## Previous Session: 2026-04-09 (continued — dashboard polish)
+
+### What Got Done
+- Fixed Grafana dashboard not auto-loading (missing provider ConfigMap and volume mounts)
+- Fixed dashboard JSON format (was Grafana export format `{"dashboard":{...}}`, provisioner needs raw JSON)
+- Disabled Alertmanager (crash loop — 600-day-old StatefulSet selector conflict with chart 67.9.0, no alert rules configured anyway)
+- Fixed per-service metric breakdown: added `podTargetLabels: [app]` to PodMonitor so `by (app)` queries split by service
+- Fixed log panels: changed from `{namespace="default"} | json` (pulled all containers + failed JSON parsing) to `{namespace="default", container="ananse-proxy"}` (sidecar logs only, no parser)
+- Updated README Quick Start for new clients (published Helm repo, 5-step flow)
+- Updated gh-pages landing page: badge v0.2.0→v0.2.9, added Observability section
+
+### Grafana Dashboard Auto-Provisioning
+
+**How it works:**
+- Provider ConfigMap (`jhipster-grafana-dashboard-provider`) mounts at `/etc/grafana/provisioning/dashboards/`
+- Dashboard ConfigMap (`jhipster-grafana-dashboard`) mounts at `/var/lib/grafana/dashboards/`
+- Grafana polls for changes every 30s (`updateIntervalSeconds: 30`)
+- JSON must be **raw dashboard format** — top-level keys: `annotations`, `panels`, `title`, etc.
+- NOT `{"dashboard": {...}}` (that's the Grafana export-for-sharing format — provisioner silently fails with "Dashboard title cannot be empty")
+
+**Gotcha — ArgoCD overrides live kubectl changes:**
+Any `kubectl apply/replace/patch` to a resource managed by ArgoCD will be reverted on next sync. Always commit to git first, then force sync:
+```bash
+kubectl annotate app <app-name> -n argocd argocd.argoproj.io/refresh=hard --overwrite
+```
+
+### PodMonitor `podTargetLabels` — Per-Service Breakdown
+
+Without `podTargetLabels`, scraped metrics only carry `direction`, `status`, `pod`, `namespace` — no `app` label. Adding it copies the pod's `app` label onto every metric.
+
+**In `ananse-chart/templates/servicemonitor.yaml`:**
+```yaml
+podTargetLabels:
+  - app
+```
+
+This enables `by (app)` grouping in dashboard queries, splitting metrics by service name (e.g. `blackkonnectcxpgateway`, `blackkonnectcxpcontacts`, `blackkonnectcxpengagement`).
+
+Labels only attach to metrics scraped **after** the patch was applied — existing series don't backfill.
+
+### Loki Query Pattern for Sidecar Logs
+
+**Wrong (old):** `{namespace="default"} | json`
+- Pulls all containers in namespace (Spring Boot app logs, system logs, everything)
+- `| json` fails on Spring Boot plain-text logs → `__error__=JSONParserErr` on every line
+
+**Correct:**
+```
+{namespace="default", container="ananse-proxy"}                          # all sidecar logs
+{namespace="default", container="ananse-proxy"} |= "level=error"        # errors only
+{namespace="default", container="ananse-proxy"} |~ "4[0-9]{2}|5[0-9]{2}" # 4xx/5xx
+```
+
+Sidecar proxy logs are JSON — labels like `namespace`, `pod`, `container` come from Promtail's CRI pipeline stage (the `{...}` selectors), not from parsing the log line body.
+
+### Alertmanager Disabled
+
+**Why it was crashing:** Prometheus Operator tried to update an immutable `spec.selector` field on a StatefulSet created 600 days ago with different chart defaults → infinite delete+recreate loop. CRDs were also OutOfSync (schema missing `.status.selector`).
+
+**Why we don't need it:** Alertmanager routes Prometheus alert rules to notification channels (Slack, email, PagerDuty). With no alert rules configured, it does nothing.
+
+**Fix:** `alertmanager.enabled: false` in `kubernetes/monitoring-k8s/prometheus-operator-values.yaml`.
+
+To add alerting later: configure alert rules in a PrometheusRule CR, then re-enable alertmanager and add a receiver (Slack webhook URL etc.).
+
+### Actual Proxy Metrics (what the sidecar emits)
+
+These are the metrics the sidecar actually exposes at `:15021/metrics`. Use these in dashboards — the old names (`ananse_backend_health_status`, `ananse_circuit_breaker_state`) don't exist:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ananse_sidecar_connections_active` | Gauge | Active connections right now |
+| `ananse_sidecar_connections_total` | Counter | Total connections since start |
+| `ananse_sidecar_request_duration_seconds` | Histogram | Latency histogram |
+| `ananse_http_requests_in_flight` | Gauge | In-flight HTTP requests |
+| `ananse_circuit_breaker_failures_total` | Counter | Circuit breaker trip count |
+| `ananse_sidecar_connections_by_tls_total` | Counter | Connections by TLS mode |
+
+### End-of-Session BlackKonnect Observability State (2026-04-09 final)
+- **Metrics:** 4 Ananse sidecar targets UP, per-service breakdown working via `by (app)`
+- **Logs:** Loki showing ananse-proxy container logs only (no Spring Boot noise)
+- **Traces:** Tempo has traces from blackkonnectcxpgateway and blackkonnectcxpengagement
+- **Dashboard:** Auto-provisioned, "Ananse Service Mesh" dashboard loading on Grafana start
+- **Alertmanager:** Disabled (no alert rules, was crash-looping)
+
+---
+
+## Previous Session: 2026-04-09 (observability bring-up)
+
+### What Got Done
+- Fixed inbound proxy `proxyBidirectional` leak causing liveness probe timeouts (v0.2.8)
+- Fixed app container probe timeout: patched `timeoutSeconds` from 1s → 5s on contacts and engagement deployments
+- All BlackKonnect app pods now `2/2 Running` with 0 restarts (except pre-existing engagement restarts)
+- Fixed Prometheus scraping architecture (ServiceMonitor → PodMonitor targeting sidecar admin port)
+- Got full observability stack working on BlackKonnect: metrics UP, logs in Loki, traces in Tempo
+- Released v0.2.9 (CI passed, chart published to gh-pages Helm repo)
+- Captured all live patches into BlackKonnect manifests (reproducible on prod in ~5 min)
+
+### Prometheus Scraping Architecture
+
+**Controlplane has no metrics server.** It only runs `:8443` (webhook) and `:50051` (gRPC). The old ServiceMonitor targeting the controlplane was wrong.
+
+**Metrics come from sidecar proxies** at `:15021/metrics` (admin port) on every injected pod.
+
+**Two paths to scraping:**
+
+| Environment | Approach | What to deploy |
+|---|---|---|
+| Has Prometheus Operator (BlackKonnect) | PodMonitor in Helm chart | `serviceMonitor.enabled: true` in values |
+| Standalone (no operator) | Plain Prometheus with k8s SD | `kubectl apply -f k8s/prometheus.yaml ...` |
+
+**PodMonitor selector** (in `ananse-chart/templates/servicemonitor.yaml`):
+- Matches pods with **label** `sidecar.ananse.io/status: injected`
+- Scrapes port named `ananse-admin` (15021)
+- `namespaceSelector: any: true` — finds injected pods in any namespace
+
+**Injector changes** (`controlplane/injector/injector.go`):
+- Added `{Name: "ananse-admin", ContainerPort: 15021}` to sidecar container ports (required for PodMonitor port-by-name)
+- Now sets `sidecar.ananse.io/status: injected` as both annotation AND label (PodMonitor selector only matches labels, not annotations)
+
+**BlackKonnect-specific cluster patches** (now in manifests, no longer live-only):
+- `jhipster-prometheus-cr.yml`: added `podMonitorSelector: {}`, `podMonitorNamespaceSelector: {}`, `serviceMonitorNamespaceSelector: {}`
+- `kubernetes/ananse/ananse-prometheus-rbac.yaml`: RoleBinding giving `jhipster-prometheus-sa` view access in `ananse-system`
+
+**Standalone k8s/ stack** (`k8s/` directory):
+- `k8s/prometheus.yaml` — Prometheus with `kubernetes_sd_configs` scraping `:15021/metrics` from pods with annotation `sidecar.ananse.io/status: injected`
+- `k8s/grafana.yaml` — Grafana with Prometheus + Loki + Tempo datasources (Loki added this session)
+- `k8s/loki.yaml`, `k8s/promtail.yaml`, `k8s/tempo.yaml` — log and trace backends
+- Deploy with: `kubectl create ns monitoring && kubectl apply -f k8s/`
+
+### BlackKonnect Manifests Now Fully Reproducible
+
+All live patches captured in `BlackKonnectCxpDeployments`:
+- `kubernetes/monitoring-k8s/jhipster-prometheus-cr.yml` — Prometheus CR with cross-namespace PodMonitor watching
+- `kubernetes/ananse/ananse-prometheus-rbac.yaml` — RBAC for cross-namespace scraping (new file)
+- `kubernetes/blackkonnectcxpcontacts-k8s/blackkonnectcxpcontacts-deployment.yml` — `timeoutSeconds: 5` on both probes
+- `kubernetes/blackkonnectcxpengagement-k8s/blackkonnectcxpengagement-deployment.yml` — `timeoutSeconds: 5` on both probes
+- `kubernetes/ananse/THURSDAY_RUNBOOK.md` — updated runbook with all steps including RBAC + Prometheus CR apply
+
+### v0.2.9 Observability Fixes
+
+**Released:** v0.2.9 — chart published to `ananselabs/ananse` gh-pages Helm repo.
+
+**Key fixes shipped in this version:**
+
+1. **PodMonitor instead of ServiceMonitor** (`ananse-chart/templates/servicemonitor.yaml`)
+   - Controlplane has no metrics server. Old ServiceMonitor targeted controlplane port 9090 (wrong).
+   - New PodMonitor targets every pod labeled `sidecar.ananse.io/status: injected` on port `ananse-admin` (15021).
+   - `namespaceSelector: any: true` — finds injected pods across all namespaces.
+
+2. **Injector now sets injection status as label** (`controlplane/injector/injector.go`)
+   - PodMonitor selector only matches labels, not annotations.
+   - Injector now sets `sidecar.ananse.io/status: injected` as both label AND annotation.
+   - Also added `ananse-admin` ContainerPort 15021 to sidecar (required for PodMonitor port-by-name reference).
+
+3. **Tracing endpoint made configurable** (`ananse-chart/templates/injector-config.yaml`)
+   - Added `TRACING_ENABLED` and `OTEL_ENDPOINT` to injector ConfigMap.
+   - BlackKonnect values: `tempo.monitoring.svc.cluster.local:4317`.
+   - Removed stale `METRICS_PORT` (not used by injector).
+
+4. **Stale metrics port removed from webhook Service** (`ananse-chart/templates/webhook-service.yaml`)
+   - Removed port 9090 that pointed at controlplane (no metrics there).
+
+5. **values.yaml restructured**
+   - Removed top-level `metrics:` block.
+   - Added `observability.tracing.enabled` and `observability.tracing.endpoint`.
+
+### Observability Architecture (v0.2.9+)
+
+**Metrics flow:**
+```
+sidecar :15021/metrics → PodMonitor (namespaceSelector: any) → jhipster-prometheus → Grafana
+```
+
+**Logs flow:**
+```
+/var/log/pods/*/*.log → promtail (static glob) → loki → Grafana
+```
+
+**Traces flow:**
+```
+sidecar → OTEL gRPC :4317 → Tempo → Grafana
+```
+
+**Two deployment paths:**
+
+| Environment | Prometheus approach | What to apply |
+|---|---|---|
+| Has Prometheus Operator (BlackKonnect) | PodMonitor in Helm chart | `serviceMonitor.enabled: true` |
+| Standalone | Plain Prometheus with k8s SD | `kubectl apply -f k8s/` |
+
+### Promtail Fix (static glob vs kubernetes_sd)
+
+`kubernetes_sd_configs` with path relabeling produced 0 active file targets — the replacement pattern `__path__: /var/log/pods/*$1/*.log` with uid/container relabeling matched nothing.
+
+**Working config** (`kubernetes/observability/promtail.yaml`):
+```yaml
+scrape_configs:
+  - job_name: pods
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: pods
+          __path__: /var/log/pods/*/*/*.log
+    pipeline_stages:
+      - cri: {}
+      - regex:
+          expression: '^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>[^_]+)_[^/]+/(?P<container>[^/]+)/.*$'
+          source: filename
+      - labels:
+          namespace:
+          pod:
+          container:
+```
+
+**Note:** DaemonSets don't auto-reload on ConfigMap changes. Must `kubectl rollout restart daemonset/promtail -n monitoring` after config change.
+
+### BlackKonnect ClusterRole Requirement
+
+With `namespaceSelector: any: true` in PodMonitor, Prometheus tries to list pods at **cluster scope**. A namespace-scoped Role+RoleBinding in `default` is not enough — Prometheus gets 403 "pods is forbidden at cluster scope".
+
+**Fix:** Upgrade `jhipster-prometheus-sa` to ClusterRole + ClusterRoleBinding (in `jhipster-prometheus-cr.yml`).
+
+### kube-prometheus-stack Inject Opt-out
+
+kube-prometheus-stack components (grafana, operator, kube-state-metrics, alertmanager, prometheus) must NOT get Ananse sidecars. Applied via:
+- Live: `kubectl patch` adding `sidecar.ananse.io/inject: "false"` annotation to each StatefulSet/Deployment
+- Persisted in: `kubernetes/monitoring-k8s/prometheus-operator-values.yaml` with `podAnnotations` for each component, deployed via ArgoCD app `kube-prometheus-stack.yaml`
+
+### ArgoCD Hard Refresh Pattern
+
+After pushing a new chart version, ArgoCD may wait up to 3 min for cache expiry:
+```bash
+kubectl annotate app -n argocd ananse argocd.argoproj.io/refresh=hard --overwrite
+kubectl get app -n argocd ananse  # wait for Synced/Healthy
+kubectl rollout restart deployment/blackkonnectcxpgateway \
+  deployment/blackkonnectcxpcontacts \
+  deployment/blackkonnectcxpengagement -n default
+```
+
+### Grafana Access From Your PC
+
+jhipster-grafana runs as NodePort 31626 on slave node `157.245.35.3`.
+
+**Option 1: Direct NodePort** (if slave node is reachable):
+```
+http://157.245.35.3:31626
+```
+
+**Option 2: Port-forward** (via SSH tunnel):
+```bash
+# SSH tunnel must be open first
+ssh -i ~/.ssh/master_key -L 6443:localhost:6443 root@178.62.79.147 -N -f
+
+# Port-forward Grafana
+KUBECONFIG=~/.kube/blackkonnect.yaml kubectl port-forward -n default svc/jhipster-grafana 3000:3000
+# Open http://localhost:3000
+```
+
+**Login:** admin / jhipster (from `jhipster-grafana-credentials` secret)
+
+**Datasources auto-provisioned:**
+- Prometheus → `http://jhipster-prometheus.default.svc:9090`
+- Loki → `http://loki.monitoring.svc.cluster.local:3100` (with TraceID derived field → links to Tempo)
+- Tempo → `http://tempo.monitoring.svc.cluster.local:3200` (with tracesToLogs → links to Loki)
+
+**To view logs:** Explore → Loki → label filters `namespace=default`
+**To view traces:** Explore → Tempo → Search (select service, operation)
+**To view metrics:** Explore → Prometheus → metric `ananse_requests_total` or import Ananse dashboard
+
+### Grafana Dashboard Fixes (2026-04-09 continued)
+
+**Problem 1 — Logs panels showed "No data":**
+- Dashboard queries used `{namespace="ananse"}` but injected pods are in `default` namespace
+- Fixed all 3 Loki panels: `namespace="ananse"` → `namespace="default"`
+
+**Problem 2 — Health/Circuit panels showed "No data":**
+- `ananse_backend_health_status` and `ananse_circuit_breaker_state` are not emitted by the proxy
+- Proxy actually emits: `ananse_sidecar_connections_active`, `ananse_sidecar_connections_total`, `ananse_sidecar_request_duration_seconds_*`, `ananse_http_requests_in_flight`
+- Fixed: "Healthy Backends" → "Active Sidecars" (`count(ananse_sidecar_connections_active)`)
+- Fixed: "Backend Health Status" → "Active Connections by Pod" (`ananse_sidecar_connections_active`)
+- Fixed: "Circuit Breaker States" → "In-Flight Requests by Pod" (`ananse_http_requests_in_flight`)
+
+**Problem 3 — Dashboard ConfigMap format:**
+- Old `jhipster-grafana-dashboard` ConfigMap had Grafana export format (`{"dashboard":{...}}`) — file provisioner needs raw JSON
+- Also was missing the dashboard provider ConfigMap and volume mounts in the Grafana deployment
+- Fixed by: adding `jhipster-grafana-dashboard-provider` ConfigMap, mounting it + dashboard at `/etc/grafana/provisioning/dashboards` and `/var/lib/grafana/dashboards`
+- ArgoCD was overriding live changes — had to commit fixes to `BlackKonnectCxpDeployments` git repo
+
+**Gotcha — ArgoCD overrides live kubectl changes:**
+Any `kubectl apply/replace` to a resource managed by ArgoCD will be reverted on next sync. Always commit to git first, then let ArgoCD sync (or force with `kubectl annotate app <name> -n argocd argocd.argoproj.io/refresh=hard --overwrite`).
+
+### End-of-Session BlackKonnect Observability State (2026-04-09)
+- **Metrics:** 4 Ananse sidecar targets UP on jhipster-prometheus
+- **Logs:** Loki receiving log streams from `default` namespace with labels: namespace/pod/container/filename/job/stream
+- **Traces:** Tempo has 5 traces from blackkonnectcxpgateway and blackkonnectcxpengagement
+
+---
+
+### v0.2.8 Bug Fix: Inbound proxyBidirectional Leak
+
+**File:** `pkg/proxy/listener.go`
+
+**Root cause:** After every inbound HTTP request-response cycle, the handler entered `proxyBidirectional` — including for kubelet health probe connections. Kubelet uses `DisableKeepAlives: true` (sends `Connection: close`), so after receiving the response it closes the TCP connection. The proxy's `src → dst` goroutine got EOF and finished, but `dst → src` was stuck waiting for the Spring Boot app to send data on its keep-alive connection. The app waits for a request, the proxy waits for app data — deadlock on that connection for ~75 seconds (Tomcat's keep-alive timeout). After 20+ minutes of liveness probes at 10s period, hundreds of zombie goroutines accumulated, exhausting Spring Boot's Tomcat thread pool and causing intermittent `context deadline exceeded`.
+
+**Fix in `handleInboundConnection` (listener.go ~line 1047):**
+```go
+// Skip bidirectional proxy when connection should close:
+// - client sent Connection: close (req.Close = true)
+// - server responded with Connection: close (resp.Close = true)
+// - request is a health/probe endpoint (short-lived, no streaming)
+if req.Close || resp.Close || strings.Contains(req.URL.Path, "/health") {
+    return
+}
+```
+
+Also fixed: `conn` field was nil on `rw` and `targetRW` in inbound handler, making `CloseWrite()` a no-op. Now properly set like the outbound handler does.
+
+**Outbound handler already had this pattern** (line ~718):
+```go
+if req.URL.Path == "/health" || req.URL.Path == "/healthz" || req.URL.Path == "/ready" {
+    return
+}
+```
+But inbound was missing it entirely.
+
+### Current BlackKonnect Pod State (2026-04-09 end of session)
+| Pod | Status | Notes |
+|-----|--------|-------|
+| blackkonnectcxpadmin | 2/2 Running | |
+| blackkonnectcxpcontacts | 2/2 Running, 0 restarts | |
+| blackkonnectcxpengagement | 2/2 Running | |
+| blackkonnectcxpgateway | 1/1 Running | Gateway mode, no sidecar |
+
+### Probe Timeout Patch (applied directly to deployments)
+Contacts and engagement had `timeoutSeconds: 1` on the readiness probe. Patched to `5s` directly on the deployment objects (not in the app's Helm chart). This is not persisted — if the deployments are recreated from their Helm chart, they'll revert to 1s.
+
+---
+
+## Previous Session: 2026-04-09
+
+### BlackKonnect Cluster Access
+
+**Master node:** `178.62.79.147`
+**SSH key:** `~/.ssh/master_key`
+**Kubeconfig:** `~/.kube/blackkonnect.yaml`
+
+**Connect (run once per session):**
+```bash
+# 1. Open tunnel (background)
+ssh -i ~/.ssh/master_key -L 6443:localhost:6443 root@178.62.79.147 -N -f -o StrictHostKeyChecking=no
+
+# 2. Grab kubeconfig (first time or if creds rotated)
+ssh -i ~/.ssh/master_key -o StrictHostKeyChecking=no root@178.62.79.147 'cat /etc/kubernetes/admin.conf' \
+  | sed 's|https://[^:]*:6443|https://localhost:6443|g' \
+  > ~/.kube/blackkonnect.yaml
+awk '/certificate-authority-data:/ { print "    insecure-skip-tls-verify: true"; next } { print }' \
+  ~/.kube/blackkonnect.yaml > ~/.kube/blackkonnect.yaml.tmp && mv ~/.kube/blackkonnect.yaml.tmp ~/.kube/blackkonnect.yaml
+```
+
+**Use:** `KUBECONFIG=~/.kube/blackkonnect.yaml kubectl ...`
+
+---
+
+## Previous Session: 2026-04-07
+
+### What Got Done
+- Added Consul service discovery support for VM/Docker deployments
+- Created Helm chart for Ananse installation on K8s
+- Added optional observability stack (Prometheus, Loki, Promtail, Tempo)
+- Auto-loading Grafana dashboard when Prometheus enabled
+- ServiceMonitor for Prometheus auto-scraping
+
+### Consul Integration
+
+**New file:** `controlplane/consul-client.go` - implements `ConfigWatcher` interface
+**Updated:** `controlplane/cmd/main.go` - added `-consul`, `-consul-addr`, `-consul-tag` flags
+
+**Usage:**
+```bash
+# Run control plane with Consul discovery
+./controlplane -consul -consul-addr "consul-host:8500"
+
+# With tag filtering (only services tagged "ananse")
+./controlplane -consul -consul-addr "consul-host:8500" -consul-tag "ananse"
+```
+
+**How it works:**
+- Uses Consul blocking queries for real-time catalog updates
+- Same debounce pattern as K8sClient (500ms window)
+- Discovers healthy service instances from Consul health API
+- Builds same `pb.Config` structure as other watchers
+- Routes created at `/{service-name}` for each discovered service
+
+**Use case:** Client with Consul gateway running in Docker on VMs (not K8s)
+
+### Client Deployments
+
+| Client | Infra | Ananse Mode | Discovery Flag |
+|--------|-------|-------------|----------------|
+| BlackKonnect | K8s (DigitalOcean) | Sidecar | `-k8s` |
+| Other client | VM + Docker + Consul | Gateway | `-consul` |
+
+### Helm Chart (Complete)
+
+**Structure:**
+```
+ananse-chart/
+├── Chart.yaml              # Dependencies defined here
+├── values.yaml
+├── charts/                 # Downloaded dependencies (gitignored)
+├── dashboards/
+│   └── ananse-dashboard.json
+└── templates/
+    ├── namespace.yaml
+    ├── rbac.yaml
+    ├── injector-config.yaml
+    ├── secret.yaml
+    ├── webhook-config.yaml
+    ├── webhook-deployment.yaml
+    ├── webhook-service.yaml
+    ├── grafana-dashboard.yaml  # Auto-loads dashboard into Grafana
+    └── servicemonitor.yaml     # Prometheus auto-scraping
+```
+
+**values.yaml:**
+```yaml
+name: "ananse"
+namespace: "ananse-system"
+debug_mode: "false"
+failurePolicy: "Fail"
+
+controlplane:
+  image: "anthony4m/ananse-controlplane:v1"
+
+sidecar:
+  image: "anthony4m/ananse-proxy:v1"
+
+init:
+  image: "anthony4m/ananse-init:v1"
+
+discovery:
+  mode: "k8s"  # k8s | consul | file
+  consul:
+    address: "localhost:8500"
+    tag: ""
+
+metrics:
+  enabled: true
+  port: 9090
+
+proxy:
+  mode: "sidecar"  # sidecar | gateway
+
+# Observability - disabled by default
+observability:
+  prometheus:
+    enabled: false
+  loki:
+    enabled: false
+  promtail:
+    enabled: false
+  tempo:
+    enabled: false
+  dashboard:
+    enabled: true  # Auto-load Grafana dashboard
+```
+
+**Basic Usage:**
+```bash
+# Preview rendered manifests
+helm template ananse-chart
+
+# Install Ananse only
+helm install ananse ./ananse-chart \
+  --set-file caBundle=./ca.crt.b64 \
+  -n ananse-system --create-namespace
+
+# Override discovery mode
+helm template ananse-chart --set discovery.mode=consul \
+  --set discovery.consul.address=consul.example.com:8500
+
+# Change proxy mode
+helm template ananse-chart --set proxy.mode=gateway
+```
+
+**With Observability Stack:**
+```bash
+# Update dependencies first
+helm dependency update ./ananse-chart
+
+# Install with full observability
+helm install ananse ./ananse-chart \
+  --set observability.prometheus.enabled=true \
+  --set observability.loki.enabled=true \
+  --set observability.promtail.enabled=true \
+  --set observability.tempo.enabled=true \
+  -n ananse-system --create-namespace
+```
+
+### Next Actions
+- Test helm install on K8s cluster
+- Add caBundle generation to install workflow
+
+---
+
+## Previous Session: 2026-02-26
 
 ### What Got Done
 - Set up breakpoint debugging for sidecar proxy in Kubernetes with GoLand
