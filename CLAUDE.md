@@ -1,4 +1,136 @@
-## Last Session: 2026-04-09 (continued — trace filtering + v0.3.0)
+## Last Session: 2026-04-10 (load testing + Grafana ingress)
+
+### What Got Done
+- Added k6 load test suite to BlackKonnectCxpDeployments (`kubernetes/load-test/`)
+- Grafana exposed permanently via ingress at `https://grafana.dev.blackkonnect.io` (no more port-forwarding)
+- Updated README with load testing section and updated Grafana access instructions
+- Updated gh-pages badge to v0.3.3
+
+### k6 Load Test Suite
+
+**Location:** `BlackKonnectCxpDeployments/kubernetes/load-test/`
+- `k6-test.js` — test script (three scenarios)
+- `k6-job.yaml` — Kubernetes Job manifest
+- `README.md` — run instructions
+
+**Three scenarios:**
+| Scenario | Duration | VUs | Purpose |
+|----------|----------|-----|---------|
+| `smoke` | 3 min | 5 | Sanity check — confirms k6 can reach all services |
+| `ramp` | 19 min | 0→500 | Capacity ceiling — where does p99 start climbing? |
+| `soak` | 7h 10m | 50 | Overnight stability — goroutine/memory leak detection |
+
+**Default is `soak`** in k6-job.yaml. Run smoke and ramp first, then kick off soak before sleep.
+
+**Key design decisions:**
+- k6 pod has `sidecar.ananse.io/inject: "false"` — k6 itself is not in the mesh, but every service it hits IS, so inbound sidecar paths are exercised on every request
+- Metrics pushed to Prometheus via `K6_PROMETHEUS_RW_SERVER_URL` — k6 RPS/latency overlays on the Ananse dashboard live during the test
+- Runs inside the cluster as a Job — traffic goes through pod network → iptables → sidecar (real production path, not NodePort)
+
+**What to watch in Grafana during soak:**
+- `ananse_sidecar_connections_active` — should plateau, not drift upward (goroutine leak indicator)
+- `kubectl top pods -n default` — sidecar memory should stay flat
+- k6 error rate — should stay near 0%
+- p99 latency — should be stable, not climbing
+
+**Run sequence before go-live:**
+```bash
+# Load script (once)
+kubectl create configmap k6-test-script \
+  --from-file=test.js=kubernetes/load-test/k6-test.js \
+  -n default --dry-run=client -o yaml | kubectl apply -f -
+
+# smoke → ramp → fix anything → soak overnight
+```
+
+### Grafana Ingress
+
+Added `grafana.dev.blackkonnect.io` to `blackkonnectcxpgateway-ingress.yaml`. Uses the existing `cert-letsencrypt-prod` secret (same cert as all other `*.dev.blackkonnect.io` hosts). Points to `jhipster-grafana:3000` in the `default` namespace.
+
+**Access:** `https://grafana.dev.blackkonnect.io` — login: admin / jhipster
+
+**Note:** DNS for `grafana.dev.blackkonnect.io` must be pointed at the ingress controller IP (`api.dev.blackkonnect.io` resolves to it already — just add a CNAME or A record for the grafana subdomain).
+
+### End-of-Session State (2026-04-10 evening)
+- v0.3.3 running on BlackKonnect, all pods `2/2 Running`
+- Load test suite ready in BlackKonnect repo
+- Grafana ingress committed, ArgoCD will sync it
+- Ready for go-live after soak test passes overnight
+
+---
+
+## Last Session: 2026-04-10 (bug fixes — v0.3.2 + v0.3.3)
+
+### What Got Done
+- Fixed `FILTER_HEALTH_CHECKS` never reaching sidecar containers → released v0.3.2
+- Fixed Loki line filter for health probes in Application & Mesh Logs panel → released v0.3.3
+- Fixed `Force=true,Replace=true` on all 5 ArgoCD apps (root cause of pod cycling every 3 min)
+- Fixed `podTargetLabels: [app]` never committed (per-service metric breakdown was broken since v0.2.9) → released v0.3.1
+- Deployed v0.3.3 to BlackKonnect, restarted injected pods, confirmed `FILTER_HEALTH_CHECKS=true` live in sidecars
+
+### v0.3.1 — podTargetLabels fix
+`podTargetLabels: [app]` was written locally but never committed or released. Without it, `by (app)` PromQL queries in the dashboard showed a single aggregated line instead of per-service breakdown. Fixed in `ananse-chart/templates/servicemonitor.yaml`.
+
+### v0.3.2 — FILTER_HEALTH_CHECKS not reaching sidecar
+
+**Root cause:** The injector builds the sidecar env var list explicitly in `controlplane/injector/injector.go`. `FILTER_HEALTH_CHECKS` was present in the ConfigMap and in `values.yaml` since v0.3.0, but was never added to the explicit env var list — so it was silently ignored on every injected pod.
+
+**Fix** (`controlplane/injector/injector.go` ~line 295):
+```go
+{Name: "ANANSE_TRACING_ENABLED", Value: getEnv("TRACING_ENABLED", "false")},
+{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: getEnv("OTEL_ENDPOINT", "")},
+{Name: "FILTER_HEALTH_CHECKS", Value: getEnv("FILTER_HEALTH_CHECKS", "false")},  // was missing
+```
+
+**Lesson:** Any new ConfigMap key that needs to reach the sidecar must be explicitly added to the env var list in `injectSidecar()`. The injector does not forward all ConfigMap keys automatically.
+
+### v0.3.3 — Loki line filter bug
+
+**Root cause:** The "Application & Mesh Logs" panel query was:
+```
+{namespace="default"} | drop __error__, __error_details__ != "/management/health"
+```
+Loki parsed `!= "/management/health"` as a conditional on the `drop` operator (drop `__error_details__` when it doesn't equal that string) — not as a line filter. Health probe log lines were never excluded.
+
+**Fix:**
+```
+{namespace="default"} != "/management/health" | drop __error__, __error_details__
+```
+`!=` must come immediately after the stream selector as a standalone line filter, before any pipeline operators.
+
+### ArgoCD Force=true,Replace=true — Root Cause of Pod Cycling
+
+All 5 ArgoCD apps had `argocd.argoproj.io/sync-options: Force=true,Replace=true`. This caused ArgoCD to **delete+recreate** every managed resource on every sync (every ~3 min), including Deployments and the MutatingWebhookConfiguration. During the brief recreation window, new pods were admitted without going through the webhook (no sidecar injection). Removed from all 5 apps:
+- `argocd-apps/ananse.yaml`
+- `argocd-apps/blackkonnectcxp-engagement.yaml`
+- `argocd-apps/blackkonnectcxp-admin.yaml`
+- `argocd-apps/blackkonnectcxpgateway.yaml`
+- `argocd-apps/blackkonnectcxpcontacts.yaml`
+
+`Force=true` is legitimately needed for CRD-heavy apps (kube-prometheus-stack, cert-manager) due to immutable StatefulSet selector fields. Not needed for regular app deployments.
+
+### kubectl delete pod vs kubectl rollout restart
+
+With ArgoCD `selfHeal: true`, `kubectl rollout restart` adds a `restartedAt` annotation to the Deployment spec = drift = ArgoCD reverts it within seconds, creating new pods that miss injection.
+
+**Use `kubectl delete pod` directly** — pod deletion doesn't modify the Deployment spec, so ArgoCD has no drift to reconcile.
+
+```bash
+# Restart injected pods safely (ArgoCD-safe):
+KUBECONFIG=~/.kube/blackkonnect.yaml kubectl delete pod -n default \
+  -l 'sidecar.ananse.io/status=injected'
+```
+
+### End-of-Session State (2026-04-10)
+- **v0.3.3** deployed to BlackKonnect, all 4 app pods `2/2 Running`
+- **FILTER_HEALTH_CHECKS=true** confirmed live in sidecar env — health probe traces now filtered from Tempo
+- **Loki query fixed** — health probe logs now correctly excluded from Application & Mesh Logs panel
+- **Per-service metric breakdown** working via `podTargetLabels: [app]`
+- **Pod cycling** stopped — Force=true removed from all ArgoCD apps
+
+---
+
+## Previous Session: 2026-04-09 (continued — trace filtering + v0.3.0)
 
 ### What Got Done
 - Split log panel into "Application & Mesh Logs" (everything except health probes) and "Health Probe Logs" (only `/management/health` traffic)
@@ -33,7 +165,7 @@ Maps to env var `FILTER_HEALTH_CHECKS=true` on every injected sidecar.
 
 | Panel | Query | Shows |
 |---|---|---|
-| Application & Mesh Logs | `{namespace="default"} \| drop __error__, __error_details__ != "/management/health"` | All logs except health probes |
+| Application & Mesh Logs | `{namespace="default"} != "/management/health" \| drop __error__, __error_details__` | All logs except health probes |
 | Health Probe Logs | `{namespace="default"} \|= "/management/health" \| drop __error__, __error_details__` | Kubelet probe traffic only |
 
 `| drop __error__, __error_details__` removes the `JSONParserErr` Loki adds when it can't parse plain-text Spring Boot logs as JSON — no filtering of log lines, just removes the noise field.

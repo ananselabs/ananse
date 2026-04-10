@@ -408,15 +408,48 @@ kubectl patch configmap ananse-injector-config -n ananse-system \
 
 ### Grafana Dashboards
 
-Access Grafana at [http://localhost:3000](http://localhost:3000) after port-forwarding:
+The Ananse dashboard is auto-provisioned on startup — no manual import needed. Datasources provisioned automatically: **Prometheus**, **Loki** (with TraceID links to Tempo), **Tempo** (with log links to Loki).
 
-```bash
-kubectl port-forward svc/grafana 3000:3000 -n monitoring
+**With ingress** (recommended for persistent access — add a host entry to your ingress pointing to `jhipster-grafana:3000`):
+```
+https://grafana.your-domain.io
 ```
 
-Datasources provisioned automatically: **Prometheus**, **Loki** (with TraceID links to Tempo), **Tempo** (with log links to Loki).
+**With port-forward** (standalone / no ingress):
+```bash
+kubectl port-forward svc/grafana 3000:3000 -n monitoring
+# Open http://localhost:3000
+```
 
-A pre-built Ananse dashboard is available at `tools/dashboard/ananse_dashboard.json` — import it via Grafana UI (Dashboards → Import).
+**Login:** admin / jhipster (from `jhipster-grafana-credentials` secret)
+
+---
+
+### Load Testing
+
+Before go-live, stress the mesh with the bundled k6 test suite (located in `kubernetes/load-test/` in your deployment repo):
+
+```bash
+# 1. Load the test script
+kubectl create configmap k6-test-script \
+  --from-file=test.js=kubernetes/load-test/k6-test.js \
+  -n default --dry-run=client -o yaml | kubectl apply -f -
+
+# 2. Smoke test (3 min, 5 VUs — sanity check)
+# Edit K6_SCENARIO=smoke in k6-job.yaml
+kubectl apply -f kubernetes/load-test/k6-job.yaml
+kubectl logs -f job/k6-load-test -n default
+kubectl delete job k6-load-test -n default
+
+# 3. Ramp test (19 min, 0→500 VUs — find capacity ceiling)
+# Edit K6_SCENARIO=ramp, apply again
+
+# 4. Overnight soak test (7h, 50 VUs — confirm no goroutine/memory leaks)
+# K6_SCENARIO=soak is the default
+kubectl apply -f kubernetes/load-test/k6-job.yaml
+```
+
+The k6 pod runs outside the mesh (`sidecar.ananse.io/inject: "false"`) but every service it targets is injected — so you're exercising the real inbound proxy path on every request. Metrics are pushed directly into Prometheus so you can watch the Ananse dashboard live during the test.
 
 ---
 
