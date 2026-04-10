@@ -292,6 +292,7 @@ func injectSidecar(pod *corev1.Pod) {
 			{Name: "ANANSE_MODE", Value: "sidecar"},
 			{Name: "ANANSE_TRACING_ENABLED", Value: getEnv("TRACING_ENABLED", "false")},
 			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: getEnv("OTEL_ENDPOINT", "")},
+			{Name: "FILTER_HEALTH_CHECKS", Value: getEnv("FILTER_HEALTH_CHECKS", "false")},
 			{Name: "ANANSE_MTLS_ENABLED", Value: mtlsEnabled},
 			// Tell Go runtime to GC aggressively before hitting the container limit.
 			// Without this, GOGC=100 allows heap to reach 2×live_heap, which can
