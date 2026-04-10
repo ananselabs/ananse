@@ -2,8 +2,8 @@ apiVersion: v1
 entries:
   ananse:
   - apiVersion: v2
-    appVersion: v0.3.2
-    created: "2026-04-10T00:28:50.441580419Z"
+    appVersion: v0.3.3
+    created: "2026-04-10T00:40:37.487118403Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -22,15 +22,42 @@ entries:
       repository: https://grafana.github.io/helm-charts
       version: 1.18.0
     description: Ananse Service Mesh - lightweight service mesh for Kubernetes
-    digest: 58b0de6ac3442d0ac4b2c0c3ba1811c22821a2bc742a62c747e970f12cb3c5ad
+    digest: c9042a8f596879e3b4e5e1df4aa8fa2bc1694e30b549eaac2565269fcc2f40fd
     name: ananse
     type: application
     urls:
-    - https://ananselabs.github.io/ananse/.cr-release-packages/ananse-0.3.2.tgz
-    version: 0.3.2
+    - https://ananselabs.github.io/ananse/.cr-release-packages/ananse-0.3.3.tgz
+    version: 0.3.3
+  - apiVersion: v2
+    appVersion: v0.3.3
+    created: "2026-04-10T00:40:37.444346945Z"
+    dependencies:
+    - condition: observability.prometheus.enabled
+      name: kube-prometheus-stack
+      repository: https://prometheus-community.github.io/helm-charts
+      version: 67.9.0
+    - condition: observability.loki.enabled
+      name: loki
+      repository: https://grafana.github.io/helm-charts
+      version: 6.29.0
+    - condition: observability.promtail.enabled
+      name: promtail
+      repository: https://grafana.github.io/helm-charts
+      version: 6.16.6
+    - condition: observability.tempo.enabled
+      name: tempo
+      repository: https://grafana.github.io/helm-charts
+      version: 1.18.0
+    description: Ananse Service Mesh - lightweight service mesh for Kubernetes
+    digest: c9042a8f596879e3b4e5e1df4aa8fa2bc1694e30b549eaac2565269fcc2f40fd
+    name: ananse
+    type: application
+    urls:
+    - https://ananselabs.github.io/ananse/ananse-0.3.3.tgz
+    version: 0.3.3
   - apiVersion: v2
     appVersion: v0.3.2
-    created: "2026-04-10T00:28:50.399664938Z"
+    created: "2026-04-10T00:40:37.397438393Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -57,7 +84,7 @@ entries:
     version: 0.3.2
   - apiVersion: v2
     appVersion: v0.3.1
-    created: "2026-04-10T00:28:50.355881048Z"
+    created: "2026-04-10T00:40:37.356099844Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -84,7 +111,7 @@ entries:
     version: 0.3.1
   - apiVersion: v2
     appVersion: v0.3.0
-    created: "2026-04-10T00:28:50.311398501Z"
+    created: "2026-04-10T00:40:37.31378457Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -111,7 +138,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: v0.2.9
-    created: "2026-04-10T00:28:50.268639461Z"
+    created: "2026-04-10T00:40:37.269979395Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -138,7 +165,7 @@ entries:
     version: 0.2.9
   - apiVersion: v2
     appVersion: v0.2.8
-    created: "2026-04-10T00:28:50.222051409Z"
+    created: "2026-04-10T00:40:37.224722601Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -165,7 +192,7 @@ entries:
     version: 0.2.8
   - apiVersion: v2
     appVersion: v0.2.7
-    created: "2026-04-10T00:28:50.179332957Z"
+    created: "2026-04-10T00:40:37.18270078Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -192,7 +219,7 @@ entries:
     version: 0.2.7
   - apiVersion: v2
     appVersion: v0.2.6
-    created: "2026-04-10T00:28:50.133587982Z"
+    created: "2026-04-10T00:40:37.140530293Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -219,7 +246,7 @@ entries:
     version: 0.2.6
   - apiVersion: v2
     appVersion: v0.2.5
-    created: "2026-04-10T00:28:50.091110581Z"
+    created: "2026-04-10T00:40:37.09833476Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -246,7 +273,7 @@ entries:
     version: 0.2.5
   - apiVersion: v2
     appVersion: v0.2.4
-    created: "2026-04-10T00:28:50.047045007Z"
+    created: "2026-04-10T00:40:37.056901147Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -273,7 +300,7 @@ entries:
     version: 0.2.4
   - apiVersion: v2
     appVersion: v0.2.3
-    created: "2026-04-10T00:28:49.999730441Z"
+    created: "2026-04-10T00:40:37.016241351Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -300,7 +327,7 @@ entries:
     version: 0.2.3
   - apiVersion: v2
     appVersion: v0.2.2
-    created: "2026-04-10T00:28:49.957897974Z"
+    created: "2026-04-10T00:40:36.97513196Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -327,7 +354,7 @@ entries:
     version: 0.2.2
   - apiVersion: v2
     appVersion: v0.2.0
-    created: "2026-04-10T00:28:49.915615582Z"
+    created: "2026-04-10T00:40:36.933776082Z"
     dependencies:
     - condition: observability.prometheus.enabled
       name: kube-prometheus-stack
@@ -352,4 +379,4 @@ entries:
     urls:
     - https://ananselabs.github.io/ananse/ananse-0.2.0.tgz
     version: 0.2.0
-generated: "2026-04-10T00:28:49.87174421Z"
+generated: "2026-04-10T00:40:36.893182969Z"
