@@ -1447,7 +1447,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{namespace=\"default\"} | drop __error__, __error_details__ != \"/management/health\"",
+          "expr": "{namespace=\"default\"} != \"/management/health\" | drop __error__, __error_details__",
           "queryType": "range",
           "refId": "A"
         }
