@@ -427,29 +427,55 @@ kubectl port-forward svc/grafana 3000:3000 -n monitoring
 
 ### Load Testing
 
-Before go-live, stress the mesh with the bundled k6 test suite (located in `kubernetes/load-test/` in your deployment repo):
+Before go-live, stress the mesh with the bundled k6 test suite (`kubernetes/load-test/` in your deployment repo). Tests run as a Kubernetes Job inside the cluster — traffic goes through the real pod network → iptables → sidecar path.
+
+**Three scenarios:**
+
+| Scenario | Duration | VUs | Purpose |
+|---|---|---|---|
+| `smoke` | 3 min | 5 | Sanity check — confirm all endpoints reachable |
+| `ramp` | 19 min | 0→200 | Find capacity ceiling |
+| `soak` | 7h | 50 | Overnight — goroutine/memory leak detection |
+
+**Setup (one time):**
 
 ```bash
-# 1. Load the test script
+# Store credentials
+kubectl create secret generic k6-credentials \
+  --from-literal=username=YOUR_USER \
+  --from-literal=password=YOUR_PASS \
+  -n default
+
+# Load the test script
 kubectl create configmap k6-test-script \
   --from-file=test.js=kubernetes/load-test/k6-test.js \
   -n default --dry-run=client -o yaml | kubectl apply -f -
+```
 
-# 2. Smoke test (3 min, 5 VUs — sanity check)
-# Edit K6_SCENARIO=smoke in k6-job.yaml
+**Run:**
+
+```bash
+# Smoke (edit K6_SCENARIO=smoke in k6-job.yaml first)
 kubectl apply -f kubernetes/load-test/k6-job.yaml
 kubectl logs -f job/k6-load-test -n default
 kubectl delete job k6-load-test -n default
 
-# 3. Ramp test (19 min, 0→500 VUs — find capacity ceiling)
-# Edit K6_SCENARIO=ramp, apply again
+# Ramp (K6_SCENARIO=ramp)
+# ... repeat
 
-# 4. Overnight soak test (7h, 50 VUs — confirm no goroutine/memory leaks)
-# K6_SCENARIO=soak is the default
+# Soak overnight (K6_SCENARIO=soak is the default)
 kubectl apply -f kubernetes/load-test/k6-job.yaml
+
+# Morning check
+kubectl logs job/k6-load-test -n default | tail -40
 ```
 
-The k6 pod runs outside the mesh (`sidecar.ananse.io/inject: "false"`) but every service it targets is injected — so you're exercising the real inbound proxy path on every request. Metrics are pushed directly into Prometheus so you can watch the Ananse dashboard live during the test.
+**What to watch in Grafana during soak:**
+- `ananse_sidecar_connections_active` — should plateau, not drift upward (goroutine leak)
+- `kubectl top pods` — sidecar memory should stay flat
+- p99 latency — stable means the cluster is healthy; climbing means something is accumulating
+
+The k6 pod runs outside the mesh (`sidecar.ananse.io/inject: "false"`) but every service it hits IS in the mesh — so you're testing the real inbound proxy path on every request. Auth goes through Keycloak the same way the frontend does.
 
 ---
 
