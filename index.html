@@ -443,6 +443,43 @@
       white-space: pre-wrap;
     }
 
+    /* STATS / BATTLE TESTED */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3rem;
+    }
+
+    .stat-card {
+      background: var(--light);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem 1.5rem;
+      text-align: center;
+    }
+
+    .stat-num {
+      font-size: 3rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      color: var(--black);
+      margin-bottom: 0.4rem;
+    }
+
+    .stat-label {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--black);
+      margin-bottom: 0.25rem;
+    }
+
+    .stat-sub {
+      font-size: 0.82rem;
+      color: var(--grey);
+    }
+
     /* FOOTER */
     footer {
       border-top: 1px solid var(--border);
@@ -562,6 +599,46 @@
       <p>Each sidecar runs at ~100m CPU / 64Mi memory. The full mesh adds minimal overhead to your cluster.</p>
     </div>
   </div>
+</section>
+
+<hr class="divider" />
+
+<!-- BATTLE TESTED -->
+<section class="section" id="battle-tested">
+  <div class="section-label">Battle tested</div>
+  <h2 class="section-title">Built for production.<br/>Proven under pressure.</h2>
+  <p class="section-sub">
+    Numbers from a real production Kubernetes deployment running a sustained soak test —
+    50 concurrent users, 8 hours straight, no warmup exceptions.
+  </p>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-num">2.6M</div>
+      <div class="stat-label">requests processed</div>
+      <div class="stat-sub">without a single pod restart</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num">87</div>
+      <div class="stat-label">req/s sustained</div>
+      <div class="stat-sub">for 8+ hours continuously</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num">0</div>
+      <div class="stat-label">sidecar crashes</div>
+      <div class="stat-sub">zero memory leaks detected</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num">flat</div>
+      <div class="stat-label">memory over 8 hours</div>
+      <div class="stat-sub">goroutine count stable throughout</div>
+    </div>
+  </div>
+
+  <p style="margin-top: 2.5rem; text-align: center; color: var(--grey); font-size: 0.875rem; max-width: 560px; margin-left: auto; margin-right: auto;">
+    The mesh was transparent throughout. Errors observed during the test originated from application-layer
+    configuration (gateway connection pool), not the proxy — confirmed via per-pod Prometheus metrics.
+  </p>
 </section>
 
 <hr class="divider" />
