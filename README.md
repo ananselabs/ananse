@@ -358,10 +358,12 @@ curl http://<pod-ip>:15021/metrics
 ```
 
 Key metrics:
-- `ananse_requests_total` - Request count by status
-- `ananse_request_duration_seconds` - Latency histogram
-- `ananse_circuit_breaker_state` - Circuit breaker status
-- `ananse_backend_health` - Backend health status
+- `ananse_sidecar_connections_active` - Active connections (gauge, by direction)
+- `ananse_sidecar_connections_total` - Total connections since start (counter)
+- `ananse_sidecar_request_duration_seconds` - Latency histogram
+- `ananse_http_requests_in_flight` - Requests currently being processed
+- `ananse_circuit_breaker_failures_total` - Circuit breaker trip count
+- `ananse_sidecar_connections_by_tls_total` - Connections by TLS mode
 
 **Prometheus scraping:**
 
@@ -476,6 +478,24 @@ kubectl logs job/k6-load-test -n default | tail -40
 - p99 latency — stable means the cluster is healthy; climbing means something is accumulating
 
 The k6 pod runs outside the mesh (`sidecar.ananse.io/inject: "false"`) but every service it hits IS in the mesh — so you're testing the real inbound proxy path on every request. Auth goes through Keycloak the same way the frontend does.
+
+---
+
+## Production Results
+
+Ananse v0.3.3 was validated under sustained load in a real production Kubernetes cluster (DigitalOcean, 4 Spring Boot microservices, Prometheus Operator):
+
+| Metric | Result |
+|--------|--------|
+| Total requests processed | **2,634,971** |
+| Sustained throughput | **87 req/s for 8+ hours** |
+| Concurrent users | 50 |
+| Sidecar crashes | **0** |
+| Pod restarts | **0** |
+| Memory growth over 8h | **flat** (no goroutine leak) |
+| `ananse_sidecar_connections_active` | Stable plateau throughout |
+
+The mesh was transparent — errors observed during testing originated from application-layer configuration (Spring Cloud Gateway connection pool), not the proxy. Confirmed via per-pod Prometheus metrics during the live test.
 
 ---
 
